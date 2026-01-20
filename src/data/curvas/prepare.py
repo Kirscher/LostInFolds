@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
             "Supports multi-class masks by running STAPLE per label and fusing "
             "probabilities via argmax.\n\n"
             "Example:\n"
-            "  python curvas_preprocessing.py --input_dir /path/to/CURVAS "
+            "  python prepare.py --input_dir /path/to/CURVAS "
             "--threshold 0.5 --min_annotations 3 --num_workers 8\n"
         )
     )

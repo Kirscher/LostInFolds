@@ -2,7 +2,7 @@ from pathlib import Path
 
 import SimpleITK as sitk
 
-from scripts.curvas_preprocessing import process_patient, ProcessingConfig
+from src.data.curvas.prepare import process_patient, ProcessingConfig
 
 
 def _write_dummy_image(path: Path, size=(4, 4, 4)):

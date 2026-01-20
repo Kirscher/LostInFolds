@@ -84,6 +84,12 @@ export nnUNet_preprocessed="/home/m391k/cluster-data_all/t789r/preprocessed_data
 ### CURVAS
 Dataset downloaded from [here](https://zenodo.org/records/13767408).
 
+#### Preparation of CURVAS dataset
+
+Generate STAPLE consensus masks for CURVAS:
+- Adjust paths in /src/data/curvas/prepare.py.
+- Execute `python3 ./src/data/curvas/prepare.py --input_dir /path/to/CURVAS --threshold 0.5 --min_annotations 3 --num_workers 8`.
+
 ### Gold Atlas
 ...
 
