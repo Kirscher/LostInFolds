@@ -1,9 +1,8 @@
-from types import SimpleNamespace
 from pathlib import Path
 
 import SimpleITK as sitk
 
-from scripts.curvas_preprocessing import process_patient
+from scripts.curvas_preprocessing import process_patient, ProcessingConfig
 
 
 def _write_dummy_image(path: Path, size=(4, 4, 4)):
@@ -35,16 +34,16 @@ def test_process_patient_creates_consensus_files(tmp_path):
         ann_path = patient_dir / f"annotation_{i+1}.nii.gz"
         _write_dummy_image(ann_path)
 
-    # Minimal args namespace matching what `process_patient` expects
-    args = SimpleNamespace(
+    # Minimal config matching what `process_patient` expects
+    config = ProcessingConfig(
         threshold=0.5,
         min_annotations=3,
-        num_workers=1,
         overwrite=True,
+        labels=None,
     )
 
     # Run
-    result = process_patient(patient_dir, args)
+    result = process_patient(patient_dir, config)
 
     seg_out = patient_dir / "consensus_seg_STAPLE.nii.gz"
     prob_out = patient_dir / "consensus_prob_STAPLE.nii.gz"
