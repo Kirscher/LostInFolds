@@ -72,6 +72,19 @@ def run_staple(annotation_paths):
     return prob_map
 
 
+def _spacing_close(sp1, sp2, tol=1e-4):
+    """
+    Return True if two spacing tuples are equal within a tolerance.
+
+    This avoids skipping annotations due to tiny floating-point differences.
+    """
+    if sp1 is None or sp2 is None:
+        return False
+    if len(sp1) != len(sp2):
+        return False
+    return all(abs(a - b) <= tol for a, b in zip(sp1, sp2))
+
+
 def process_patient(patient_dir: Path, args):
     seg_out = patient_dir / "consensus_seg_STAPLE.nii.gz"
     prob_out = patient_dir / "consensus_prob_STAPLE.nii.gz"
@@ -102,9 +115,15 @@ def process_patient(patient_dir: Path, args):
         for p in annotation_paths:
             try:
                 ann = sitk.ReadImage(str(p), sitk.sitkUInt8)
-                if ann.GetSize() != ref_size or ann.GetSpacing() != ref_spacing:
+                ann_size = ann.GetSize()
+                ann_spacing = ann.GetSpacing()
+                same_size = ann_size == ref_size
+                spacing_ok = _spacing_close(ann_spacing, ref_spacing)
+                if (not same_size) or (not spacing_ok):
                     logging.warning(
-                        f"{patient_dir.name}: annotation {p.name} has mismatched size/spacing, skipping"
+                        f"{patient_dir.name}: annotation {p.name} has mismatched size/spacing, "
+                        f"image size={ref_size}, ann size={ann_size}, "
+                        f"image spacing={ref_spacing}, ann spacing={ann_spacing}; skipping"
                     )
                     continue
                 valid_annotation_paths.append(p)
