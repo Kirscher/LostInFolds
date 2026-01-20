@@ -43,7 +43,7 @@ Preprocessed GleasonXAI data:
 export nnUNet_raw="/home/m391k/E132-Projekte/Projects/2026_Kirscher_LostInFolds/data/GleasonXAI"
 export nnUNet_preprocessed="/home/m391k/cluster-data_all/t789r/preprocessed_data"
 ```
-- start preprocessing: `nnUNetv2_plan_and_preprocess -d 001 -c 3d_fullres -pl nnUNetPlannerResEncM --verify_dataset_integrity -np 10`
+- start preprocessing: `nnUNetv2_plan_and_preprocess -d 001 -c 2d -pl nnUNetPlannerResEncM --verify_dataset_integrity -np 10`
 
 ### RIGA
 
@@ -79,7 +79,7 @@ Preprocessed RIGA data:
 export nnUNet_raw="/home/m391k/E132-Projekte/Projects/2026_Kirscher_LostInFolds/data/RIGA"
 export nnUNet_preprocessed="/home/m391k/cluster-data_all/t789r/preprocessed_data"
 ```
-- start preprocessing: `nnUNetv2_plan_and_preprocess -d 002 -c 3d_fullres -pl nnUNetPlannerResEncM --verify_dataset_integrity -np 10`
+- start preprocessing: `nnUNetv2_plan_and_preprocess -d 002 -c 2d -pl nnUNetPlannerResEncM --verify_dataset_integrity -np 10`
 
 ### CURVAS
 Dataset downloaded from [here](https://zenodo.org/records/13767408).
