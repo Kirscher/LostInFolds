@@ -93,3 +93,115 @@ Generate STAPLE consensus masks for CURVAS:
 ### Gold Atlas
 ...
 
+
+## Tasks
+
+* $M$ ensemble outputs, $N$ reference segmentations
+* $y_m$: Segmentation prediction $m$ of ensemble
+* $y_n^*$: Reference segmentation $n$ of multiple reference segs
+* $\bar{y}$: Mean segmentation prediction
+* $\bar{y}^*$: Consensus reference seg
+* $p_m$: Softmax prediction $m$ of ensemble
+* $\bar{p}$: Mean softmax prediction
+
+### Segmentation
+
+**Segmentation Performance**  
+
+$\text{Dice}(\bar{y}, \bar{y}^*)$
+
+I.e. the Dice score between the consensus reference seg and the mean predicted seg
+
+
+**Inter-model Agreement**  
+...
+
+### Uncertainty Task
+
+| Task | Metric | Input Pred | Input GT | Other |
+| ---- | ---- | ---- | ---- | ---- | 
+Calibration | ACE | $\bar{y}$ | $y_0^*, ..., y_N^*$ | $\text{conf}=\max_{c} \bar{p}_c$ |
+Calibration | BA-ECE | $\bar{y}$ | $y_0^*, ..., y_N^*$ | $\text{conf}=\max_{c} \bar{p}_c$ |
+Calibration | SPACE | $\bar{y}$ | $y_0^*, ..., y_N^*$ | $\text{conf}=\max_{c} \bar{p}_c$ |
+Ambiguity Modeling | NCC | $\mathbb{E}[H(p)]$ | $\mathbb{V}[y_i^*]$ |
+Ambiguity Modeling | GED | $y_0, ..., y_M$ | $y_0^*, ..., y_N^*$ |
+Failure Detection | AURC | xxx | xxx |$r = 1- \text{Dice}(\bar{y}, \bar{y}^*)$; $\text{conf} = \mathbb{E}[\{\text{Dice}(y_i, y_j)\}_{i \neq j}]$
+
+-------------
+
+**Calibration Task**
+
+E.g. for Average Calibration Error
+
+Given $M$ confidence intervals (bins), with average confidence $\text{conf}_m$ in bin $m$ and average accuracy $\text{acc}_m$
+
+$\text{ACE} = \frac{1}{M} \sum_{m=1}^M |\text{conf}_m - \text{acc}_m|$
+
+We use the mean segmentation prediction and compare it to all reference predictions on a pixel level, that is for $N$ raters and $V$ voxels 
+
+$\text{acc} = \frac{1}{N} \frac{1}{V} \sum_n \sum_v \mathbb{I}(\bar{y}(v)==y^*_n(v))$ 
+
+As confidence, we use the max softmax output of the predicted class for each pixel, that is
+
+$\text{conf} =  \max_{c} \bar{p}_c$
+
+-------------
+
+**Ambiguity Modeling**
+
+1. *NCC*
+
+    The Normalized Cross Correlation is defined as 
+
+    $\frac{1}{V\sigma_a\sigma_b}\sum_{v=1}^{V}(a(v) - \mu_a) \cdot (b(v) - \mu_b)$
+
+    Here, $a$ is the reference uncertainty map, $b$ is the predicted uncertainty map, $V$ is the total number of pixels in the uncertainty maps, and $\mu$ and $\sigma$ are mean and standard deviation of the uncertainty maps. 
+
+    The reference uncertainty map is calculated with the pixel variance of a pixel $y^*(v)$ for $N$ different segmentation raters $\{y^*_1(v),...,y^*_N(v)\}$:
+
+    $\mathbb{V}_{p(D)}[y^*(v)] = \frac{1}{N}\sum_{n=1}^{N}(y^*_n(v) - \bar{y}(v))^2$
+
+    The predicted uncertainty map is calculated via the expected entropy:
+
+    $\mathbb{E}[H(p)] = \frac{1}{M} \sum_{m=1}^M (-\sum_{y\in Y} (p_m(y) \log p_m(y)))$  
+
+
+2. *GED*
+
+    The GED is defined as 
+
+    $D_{\text{GED}}^2(p^*, p) = 2\mathbb{E}_{y^*\sim p^*, y\sim p}[d(y^*,y)] - \mathbb{E}_{y^*, y'^* \sim p^*}[d(y^*, y'^*)] - \mathbb{E}_{y, y' \sim p}[d(y, y')]$
+
+    Here, $d(y^*, y'^*)$ is the distance between two reference segmentations, and $d(y, y')$ is the distance between two predicted segmentation variants. $p^*$ and $p$ are the respective reference and predicted distributions for the segmentations masks.
+
+    As distance, the Dice score can be used as
+
+    $d(x,y) = 1 - \text{Dice}(x,y)$
+
+-------------
+
+**Failure Detection**
+
+For failure detection, we use the Area under the Risk-Coverage-Curve (AURC)
+
+The risk is defined as 
+
+$r = 1- \text{Dice}(\bar{y}, \bar{y}^*)$
+
+The selective risk given a threshold $\tau$ and a confidence scoring function $\text{conf}$ is given as
+
+$\text{Risk} = \frac{\sum_{i=1}^D r \cdot \mathbb{I}(\text{conf} \ge \tau)}{\sum_{i=1}^D\mathbb{I}(\text{conf} \ge \tau)}$
+
+Where $D$ is the number of cases in the dataset.
+
+The coverage is defined as the ratio of cases remaining after selection:
+
+$\text{Coverage} = \frac{\sum_{i=1}^D\mathbb{I}(\text{conf} \ge \tau)}{D}$
+
+As confidence function, we use the pairwise Dice score between the predicted segmentations:
+
+$\text{conf} = \mathbb{E}[\{\text{Dice}(y_i, y_j)\}_{i \neq j}]$
+
+The AURC based on a threshold list $\{\tau\}_{t=1}^T$ with $T$ values of a CSF that are sorted ascending can then be calculated as
+
+$\text{AURC} = \sum_{t=1}^T(\text{Coverage}(\tau_t) - \text{Coverage}(\tau_{(t-1)})) \cdot (\text{Risk}(\tau_t) + \text{Risk}(\tau_{t-1}))/2$
