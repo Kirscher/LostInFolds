@@ -229,9 +229,10 @@ class ConsensusSegmentationMetric(BaseMetric):
         
         if gt is not None:
             num_classes = mean_probs.shape[0]
-            dice_scores = compute_dice(gt, consensus_seg, num_classes, include_background=False)
+            gt_consensus = gt["consensus"]
+            dice_scores = compute_dice(gt_consensus, consensus_seg, num_classes, include_background=False)
             fold_dice_scores = {
-                f"fold_{f}": compute_dice(gt, np.argmax(preds_per_fold[f], axis=0), num_classes, include_background=False)
+                f"fold_{f}": compute_dice(gt_consensus, np.argmax(preds_per_fold[f], axis=0), num_classes, include_background=False)
                 for f in fold_indices
             }
             

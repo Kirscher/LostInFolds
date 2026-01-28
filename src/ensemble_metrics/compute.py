@@ -42,6 +42,18 @@ def main():
         help="Optional ground truth directory"
     )
     parser.add_argument(
+        "--num-raters",
+        type=int,
+        default=3,
+        help="Number of raters for ground truth"
+    )
+    parser.add_argument(
+        "--consensus-type",
+        type=str,
+        default="staple",
+        help="Consensus method for ground truth. Can be 'staple', 'majority', or 'none'. If 'none', the majority vote is calculated based on available raters."
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         required=True,
@@ -61,6 +73,11 @@ def main():
     )
     
     args = parser.parse_args()
+
+    if args.consensus_type not in ["staple", "majority", "none"]:
+        raise ValueError("consensus-type must be one of 'staple', 'majority', or 'none'")
+    if args.consensus_type == "none":
+        args.consensus_type = None
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -129,7 +146,7 @@ def main():
         
         gt = None
         if args.gt_dir:
-            gt_data = load_ground_truth(args.gt_dir, case_id)
+            gt_data = load_ground_truth(gt_dir=args.gt_dir, case_id=case_id, num_raters=args.num_raters, consensus_type=args.consensus_type)
             if gt_data is not None:
                 gt, gt_affine = gt_data
                 if affine is None:

@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """Utility functions for ensemble metrics computation."""
 
-import os
 import glob
+import os
 import re
+from functools import lru_cache, reduce
 from typing import Dict, List, Optional, Tuple
-from functools import reduce, lru_cache
 
-import numpy as np
 import nibabel as nib
+import numpy as np
 
 from .metric_functions import load_array
-
 
 _affine_cache: Dict[str, np.ndarray] = {}
 
@@ -94,22 +93,63 @@ def load_prediction(fold_path: str, case_id: str) -> Tuple[np.ndarray, Optional[
     raise FileNotFoundError(f"Prediction file not found for case {case_id} in {fold_path}")
 
 
-def load_ground_truth(gt_dir: str, case_id: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+def calculate_majority_consensus(raters: List[np.ndarray]) -> np.ndarray:
+    """Calculate majority consensus segmentation from multiple raters."""
+    raters_flattened = [rater.ravel() for rater in raters]
+    raters_stacked = np.stack(raters_flattened, axis=0)
+    majority_flat = np.apply_along_axis(
+        lambda x: np.bincount(x).argmax(),
+        axis=0,
+        arr=raters_stacked
+    )
+    majority_consensus = majority_flat.reshape(raters[0].shape)
+    return majority_consensus
+
+def load_ground_truth(gt_dir: str, case_id: str, num_raters: int, consensus_type: str=None) -> Optional[Tuple[Dict, np.ndarray]]:
     """Load ground truth for a case."""
-    patterns = [
-        f"{case_id}.nii.gz",
-        f"{case_id}-seg.nii.gz",
-        f"{case_id}_seg.nii.gz",
-        f"{case_id}_gt.nii.gz",
-    ]
-    
-    for pattern in patterns:
-        gt_path = os.path.join(gt_dir, pattern)
+    if num_raters == 1:
+        gt_path = os.path.join(gt_dir, f"{case_id}.nii.gz")
         if os.path.exists(gt_path):
             img = nib.load(gt_path)
-            return img.get_fdata().astype(np.int32), img.affine
+            gt = {
+                "raters": img.get_fdata().astype(np.int32).expand_dims(axis=0),
+                "consensus": img.get_fdata().astype(np.int32),
+            }
+            return gt, img.affine
+        else:
+            return None
+
+    gt_files = [f"{case_id}_{i:02d}.nii.gz" for i in range(1, num_raters + 1)]
+    # if consensus_type is not None:
+    #     gt_files.append(f"{case_id}_{consensus_type}.nii.gz")
+
+    label_stacked = []
+    affine_stacked = []
+    for gt_file in gt_files:
+        gt_path = os.path.join(gt_dir, gt_file)
+        if os.path.exists(gt_path):
+            label = nib.load(gt_path)
+            label_stacked.append(label.get_fdata().astype(np.int32))
+            affine_stacked.append(label.affine)
+        else:
+            raise FileNotFoundError(f"Ground truth file not found: {gt_path}")
+
+    if consensus_type is not None:
+        consensus_file = f"{case_id}_{consensus_type}.nii.gz"
+        consensus_path = os.path.join(gt_dir, consensus_file)
+        if os.path.exists(consensus_path):
+            consensus_label = nib.load(consensus_path).get_fdata().astype(np.int32)
+        else:
+            raise FileNotFoundError(f"Consensus ground truth file not found: {consensus_path}")
+    else:
+        consensus_label = calculate_majority_consensus(label_stacked)
     
-    return None
+    gt = {
+        "raters": np.stack(label_stacked, axis=0),
+        "consensus": consensus_label,
+    }
+
+    return gt, affine_stacked[0]
 
 
 def standardize_prediction(pred: np.ndarray) -> np.ndarray:
