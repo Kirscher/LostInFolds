@@ -36,6 +36,37 @@ class BaseMetric:
         pass
 
 
+class PredictiveEntropyMetric(BaseMetric):
+    """Compute mean entropy maps across folds."""
+    
+    def compute_case(
+        self,
+        case_id: str,
+        preds_per_fold: Dict[int, np.ndarray],
+        gt: Optional[np.ndarray] = None,
+        affine: Optional[np.ndarray] = None,
+        case_output_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Compute mean entropy map for a case."""
+        fold_indices = sorted(preds_per_fold.keys())
+        ensemble_probs = np.stack([preds_per_fold[f] for f in fold_indices], axis=0)
+        mean_probs = np.mean(ensemble_probs, axis=0)
+        predictive_entropy_map = compute_entropy_map(mean_probs)
+        
+        if case_output_dir and affine is not None:
+            if not os.path.exists(case_output_dir):
+                os.makedirs(case_output_dir, exist_ok=True)
+            entropy_img = nib.Nifti1Image(predictive_entropy_map.astype(np.float32), affine)
+            nib.save(entropy_img, os.path.join(case_output_dir, "predictive_entropy_map.nii.gz"))
+        
+        return {
+            "case_id": case_id,
+            "predictive_entropy_mean": float(np.mean(predictive_entropy_map)),
+            "predictive_entropy_std": float(np.std(predictive_entropy_map)),
+            "predictive_entropy_max": float(np.max(predictive_entropy_map)),
+        }
+
+
 class MutualInformationMetric(BaseMetric):
     """Compute mutual information maps across folds."""
     
@@ -237,6 +268,7 @@ class ConsensusSegmentationMetric(BaseMetric):
 
 
 METRICS = {
+    "predictive_entropy": PredictiveEntropyMetric,
     "mutual_information": MutualInformationMetric,
     "expected_entropy": ExpectedEntropyMetric,
     "pairwise_dice": PairwiseDiceMetric,

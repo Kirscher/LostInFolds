@@ -22,6 +22,7 @@ __all__ = [
     "compute_dice",
     # Metric classes
     "BaseMetric",
+    "PredictiveEntropyMetric",
     "MutualInformationMetric",
     "ExpectedEntropyMetric",
     "PairwiseDiceMetric",
