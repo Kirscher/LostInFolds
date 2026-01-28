@@ -131,19 +131,61 @@ Failure Detection | AURC | xxx | xxx |$r = 1- \text{Dice}(\bar{y}, \bar{y}^*)$; 
 
 **Calibration Task**
 
-E.g. for Average Calibration Error
+1. *Average Calibration Error (ACE)*
+    
+    Let $S_m$ denote the set of voxels whose confidence falls into bin $m$. The average confidence in bin $m$ is
+    
+    $\text{conf}_m = \frac{1}{|S_m|} \sum_{v \in S_m} \text{conf}(v)$,
+    
+    and the average accuracy in bin $m$, computed against $N$ reference segmentations $\{y_1^*, \ldots, y_N^*\}$, is
+    
+    $\text{acc}_m =
+    \frac{1}{|S_m|}
+    \sum_{v \in S_m}
+    \left(
+    \frac{1}{N}
+    \sum_{n=1}^{N}
+    \mathbb{I}(\hat y(v) = y_n^*(v))
+    \right)$.
+    
+    The Average Calibration Error is then defined as
+    
+    $\text{ACE} = \frac{1}{M} \sum_{m=1}^{M} |\text{conf}_m - \text{acc}_m|$.
 
-Given $M$ confidence intervals (bins), with average confidence $\text{conf}_m$ in bin $m$ and average accuracy $\text{acc}_m$
+    
+2. *Boundary-Aware Expected Calibration Error (BA-ECE)*
 
-$\text{ACE} = \frac{1}{M} \sum_{m=1}^M |\text{conf}_m - \text{acc}_m|$
+    For each voxel $x$, let $d(x)$ denote its shortest distance to the boundary. Distances are partitioned into $K$ bands $\{b_1, \ldots, b_K\}$, where
+    
+    $b_i = \{x \mid d(x) \in \Delta_i\}$,
+    
+    and $\Delta_i$ denotes the $i$-th distance interval.
+    
+    For each band $b_i$, the mean predicted uncertainty and mean observed error are computed as
+    
+    $\mu^{U}_{b_i} = \frac{1}{|b_i|} \sum_{x \in b_i} U(x), \qquad
+    \mu^{E}_{b_i} = \frac{1}{|b_i|} \sum_{x \in b_i} E(x)$,
+    
+    where $U(x)$ is the predicted uncertainty and $E(x)$ is a binary error indicator.
+    
+    The Boundary-Aware Expected Calibration Error is then defined as
+    
+    $\text{BA-ECE} = \sum_{i=1}^{K} w_i \, \big| \mu^{U}_{b_i} - \mu^{E}_{b_i} \big|$,
+    
+    where $w_i$ is a distance-based weight inversely proportional to the average distance of voxels in band $b_i$ from the boundary. Larger penalties are thus assigned to miscalibration near object boundaries.
 
-We use the mean segmentation prediction and compare it to all reference predictions on a pixel level, that is for $N$ raters and $V$ voxels 
 
-$\text{acc} = \frac{1}{N} \frac{1}{V} \sum_n \sum_v \mathbb{I}(\bar{y}(v)==y^*_n(v))$ 
+3. *Spatially-Aware Calibration Error (SPACE)*
+    
+    SPACE evaluates the local spatial agreement between a predicted uncertainty map $U$ and a binary error map $E$. Both maps are convolved with a Gaussian kernel $G_\sigma$ to obtain spatially smoothed representations.
+    
+    $\text{SPACE} =
+    \text{mean} \left|
+    (G_\sigma * U) - (G_\sigma * E)
+    \right|$.
+    
+    Lower SPACE values indicate that predicted uncertainty better aligns with the spatial distribution of actual errors within local neighborhoods defined by the Gaussian kernel width $\sigma$.
 
-As confidence, we use the max softmax output of the predicted class for each pixel, that is
-
-$\text{conf} =  \max_{c} \bar{p}_c$
 
 -------------
 
