@@ -78,6 +78,7 @@ def load_prediction(fold_path: str, case_id: str) -> Tuple[np.ndarray, Optional[
     npz_path = os.path.join(fold_path, f"{case_id}.npz")
     if os.path.exists(npz_path):
         data = load_array(npz_path, is_ensemble=False)
+        data = data.swapaxes(1, -1)
         nii_ref = os.path.join(fold_path, f"{case_id}.nii.gz")
         if os.path.exists(nii_ref):
             affine = nib.load(nii_ref).affine
