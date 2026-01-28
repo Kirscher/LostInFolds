@@ -2,17 +2,15 @@
 """Ensemble metric classes for uncertainty and agreement metrics."""
 
 import os
-from typing import Dict, List, Optional, Tuple, Any
-import numpy as np
+from typing import Any, Dict, List, Optional, Tuple
+
 import nibabel as nib
+import numpy as np
 import pandas as pd
 
-from .metric_functions import (
-    compute_mutual_information_wrapper,
-    compute_ensemble_entropy,
-    compute_dice,
-    compute_entropy_map,
-)
+from .metric_functions import (compute_dice, compute_ensemble_entropy,
+                               compute_entropy_map,
+                               compute_mutual_information_wrapper)
 
 
 class BaseMetric:
@@ -68,7 +66,7 @@ class MutualInformationMetric(BaseMetric):
         }
 
 
-class MeanEntropyMetric(BaseMetric):
+class ExpectedEntropyMetric(BaseMetric):
     """Compute mean entropy maps across folds."""
     
     def compute_case(
@@ -82,19 +80,19 @@ class MeanEntropyMetric(BaseMetric):
         """Compute mean entropy map for a case."""
         fold_indices = sorted(preds_per_fold.keys())
         entropies = [compute_entropy_map(preds_per_fold[f]) for f in fold_indices]
-        mean_entropy_map = np.mean(entropies, axis=0)
+        expected_entropy_map = np.mean(entropies, axis=0)
         
         if case_output_dir and affine is not None:
             if not os.path.exists(case_output_dir):
                 os.makedirs(case_output_dir, exist_ok=True)
-            entropy_img = nib.Nifti1Image(mean_entropy_map.astype(np.float32), affine)
-            nib.save(entropy_img, os.path.join(case_output_dir, "mean_entropy_map.nii.gz"))
+            entropy_img = nib.Nifti1Image(expected_entropy_map.astype(np.float32), affine)
+            nib.save(entropy_img, os.path.join(case_output_dir, "expected_entropy_map.nii.gz"))
         
         return {
             "case_id": case_id,
-            "mean_entropy_mean": float(np.mean(mean_entropy_map)),
-            "mean_entropy_std": float(np.std(mean_entropy_map)),
-            "mean_entropy_max": float(np.max(mean_entropy_map)),
+            "expected_entropy_mean": float(np.mean(expected_entropy_map)),
+            "expected_entropy_std": float(np.std(expected_entropy_map)),
+            "expected_entropy_max": float(np.max(expected_entropy_map)),
         }
 
 
@@ -240,7 +238,7 @@ class ConsensusSegmentationMetric(BaseMetric):
 
 METRICS = {
     "mutual_information": MutualInformationMetric,
-    "mean_entropy": MeanEntropyMetric,
+    "expected_entropy": ExpectedEntropyMetric,
     "pairwise_dice": PairwiseDiceMetric,
     "consensus_segmentation": ConsensusSegmentationMetric,
 }

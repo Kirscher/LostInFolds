@@ -2,33 +2,16 @@
 """Ensemble metrics module for nnUNet multi-fold predictions."""
 
 # Core metric functions
-from .metric_functions import (
-    load_array,
-    compute_entropy_map,
-    compute_mutual_information_wrapper,
-    compute_ensemble_entropy,
-    compute_dice,
-)
-
+from .metric_functions import (compute_dice, compute_ensemble_entropy,
+                               compute_entropy_map,
+                               compute_mutual_information_wrapper, load_array)
 # Metric classes
-from .metrics import (
-    BaseMetric,
-    MutualInformationMetric,
-    MeanEntropyMetric,
-    PairwiseDiceMetric,
-    ConsensusSegmentationMetric,
-    METRICS,
-)
-
+from .metrics import (METRICS, BaseMetric, ConsensusSegmentationMetric,
+                      ExpectedEntropyMetric, MutualInformationMetric,
+                      PairwiseDiceMetric)
 # Utility functions
-from .utils import (
-    discover_folds,
-    discover_cases,
-    load_prediction,
-    load_ground_truth,
-    standardize_prediction,
-    one_hot_encode,
-)
+from .utils import (discover_cases, discover_folds, load_ground_truth,
+                    load_prediction, one_hot_encode, standardize_prediction)
 
 __all__ = [
     # Metric functions
@@ -40,7 +23,7 @@ __all__ = [
     # Metric classes
     "BaseMetric",
     "MutualInformationMetric",
-    "MeanEntropyMetric",
+    "ExpectedEntropyMetric",
     "PairwiseDiceMetric",
     "ConsensusSegmentationMetric",
     "METRICS",

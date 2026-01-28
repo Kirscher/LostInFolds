@@ -50,7 +50,7 @@ def main():
     parser.add_argument(
         "--metrics",
         type=str,
-        default="mutual_information,mean_entropy,pairwise_dice,consensus_segmentation",
+        default="mutual_information,expected_entropy,pairwise_dice,consensus_segmentation",
         help="Comma-separated list of metrics to compute"
     )
     parser.add_argument(

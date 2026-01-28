@@ -47,7 +47,7 @@ mi_map = compute_mutual_information_wrapper(ensemble_probs)
 ## Available Metrics
 
 - **mutual_information**: Computes mutual information maps (epistemic uncertainty)
-- **mean_entropy**: Computes mean entropy maps across folds
+- **expected_entropy**: Computes expected entropy map (aleatoric uncertainty)
 - **pairwise_dice**: Computes pairwise Dice scores between folds
 - **consensus_segmentation**: Exports consensus segmentation and compares with ground truth
 
