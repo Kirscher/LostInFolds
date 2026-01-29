@@ -27,6 +27,8 @@ __all__ = [
     "ExpectedEntropyMetric",
     "PairwiseDiceMetric",
     "ConsensusSegmentationMetric",
+    "NCCMetric",
+    "ACEMeric",
     "METRICS",
     # Utility functions
     "discover_folds",

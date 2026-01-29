@@ -8,9 +8,11 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 
-from .metric_functions import (compute_dice, compute_ensemble_entropy,
-                               compute_entropy_map,
-                               compute_mutual_information_wrapper)
+from .metric_functions import (compute_ace, compute_dice,
+                               compute_ensemble_entropy, compute_entropy_map,
+                               compute_mutual_information_wrapper, compute_ncc,
+                               get_correct_binary_multirater,
+                               get_max_prob_for_pred_classes)
 
 
 class BaseMetric:
@@ -268,10 +270,98 @@ class ConsensusSegmentationMetric(BaseMetric):
         )
 
 
+class NCCMetric(BaseMetric):
+    """Compute Normalized Cross-Correlation (NCC) metric."""
+
+    def __init__(self, output_dir: str):
+        super().__init__(output_dir)
+        self.ncc_results = []
+    
+    def compute_case(
+        self,
+        case_id: str,
+        preds_per_fold: Dict[int, np.ndarray],
+        gt: Optional[np.ndarray] = None,
+        affine: Optional[np.ndarray] = None,
+        case_output_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Compute NCC for a case. Requires expected entropy to be calculated first."""
+        gt_var = np.var(gt["raters"], axis=0)
+        expected_entropy_path = os.path.join(case_output_dir, "expected_entropy_map.nii.gz")
+        if not os.path.exists(expected_entropy_path):
+            raise FileNotFoundError(f"Expected entropy map not found for case {case_id}")
+        expected_entropy_pred = nib.load(expected_entropy_path).get_fdata()
+        ncc_value = compute_ncc(expected_entropy_pred, gt_var)
+        self.ncc_results.append({
+            "case_id": case_id,
+            "ncc": float(ncc_value),
+        })
+
+        return {"case_id": case_id}
+    
+    def export_summaries(self) -> None:
+        """Export NCC summaries."""
+        if not self.ncc_results:
+            return
+        
+        self.ncc_results.append({
+            "case_id": "mean",
+            "ncc": float(np.mean([r["ncc"] for r in self.ncc_results])),
+        })
+        df = pd.DataFrame(self.ncc_results)
+        df.to_csv(os.path.join(self.output_dir, "ncc.csv"), index=False)
+
+
+class ACEMeric(BaseMetric):
+    """Compute Average Calibration Error."""
+    
+    def __init__(self, output_dir: str):
+        super().__init__(output_dir)
+        self.ace_results = []
+
+    def compute_case(
+            self,
+            case_id: str,
+            preds_per_fold: Dict[int, np.ndarray],
+            gt: Optional[np.ndarray] = None,
+            affine: Optional[np.ndarray] = None,
+            case_output_dir: Optional[str] = None
+        ) -> Dict[str, Any]:
+        """Compute ACE for a case. Requires consensus prediction to be calculated first."""
+        conensus_pred_path = os.path.join(case_output_dir, "consensus_seg.nii.gz")
+        if not os.path.exists(conensus_pred_path):
+            raise FileNotFoundError(f"Consensus segmentation not found for case {case_id}")
+        consensus_pred = nib.load(conensus_pred_path).get_fdata()
+        gt_raters = gt["raters"]
+        correct = get_correct_binary_multirater(gt_raters=gt_raters, pred=consensus_pred)
+        conf = get_max_prob_for_pred_classes(probs_per_fold=preds_per_fold, consensus_pred=consensus_pred)
+        conf = np.repeat(conf[np.newaxis, ...], gt["raters"].shape[0], axis=0).ravel()
+        ace_value = compute_ace(correct=correct, calib_confids=conf, n_bins=20)
+        self.ace_results.append({
+            "case_id": case_id,
+            "ace": float(ace_value),
+        })
+        return {"case_id": case_id}
+    
+    def export_summaries(self) -> None:
+        """Export ACE summaries."""
+        if not self.ace_results:
+            return
+        
+        self.ace_results.append({
+            "case_id": "mean",
+            "ace": float(np.mean([r["ace"] for r in self.ace_results])),
+        })
+        df = pd.DataFrame(self.ace_results)
+        df.to_csv(os.path.join(self.output_dir, "ace.csv"), index=False)
+
+
 METRICS = {
     "predictive_entropy": PredictiveEntropyMetric,
     "mutual_information": MutualInformationMetric,
     "expected_entropy": ExpectedEntropyMetric,
     "pairwise_dice": PairwiseDiceMetric,
     "consensus_segmentation": ConsensusSegmentationMetric,
+    "ncc": NCCMetric,
+    "ace": ACEMeric,
 }
