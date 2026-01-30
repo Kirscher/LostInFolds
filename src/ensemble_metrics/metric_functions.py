@@ -75,7 +75,7 @@ def compute_dice(
     return dice_scores
 
 
-def compute_ncc(gt_unc_map: np.array, pred_unc_map: np.array) -> float:
+def compute_ncc(gt_unc_map: np.ndarray, pred_unc_map: np.ndarray) -> float:
     """
     Compute the normalized cross correlation between a ground truth uncertainty and a predicted uncertainty map,
     to determine how similar the maps are.
@@ -115,7 +115,7 @@ def get_dist_dict_from_dice(dice_dict: Dict[str, float]) -> Dict[str, float]:
     return dist_dict
 
 
-def compute_ged(gt_raters: np.array, ensemble_pred: np.array, num_classes: int, include_background:bool =False) -> Dict[str, float]:
+def compute_ged(gt_raters: np.ndarray, ensemble_pred: np.ndarray, num_classes: int, include_background:bool =False) -> Dict[str, float]:
     """Compute Generalized Energy Distance (GED) metric."""
     """
     Input:
@@ -390,7 +390,7 @@ def compute_ba_ece(
 
 
 def rc_curve_stats(
-    risks: np.array, confids: np.array
+    risks: np.ndarray, confids: np.ndarray
 ) -> tuple[list[float], list[float], list[float]]:
     coverages = []
     selective_risks = []
@@ -429,7 +429,7 @@ def rc_curve_stats(
     return coverages, selective_risks, weights
 
 
-def compute_aurc(risks: np.array, confids: np.array):
+def compute_aurc(risks: np.ndarray, confids: np.ndarray):
     _, risks, weights = rc_curve_stats(risks, confids)
     return sum(
         [(risks[i] + risks[i + 1]) * 0.5 * weights[i] for i in range(len(weights))]
