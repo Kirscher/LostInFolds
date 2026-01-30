@@ -87,6 +87,11 @@ def compute_ncc(gt_unc_map: np.ndarray, pred_unc_map: np.ndarray) -> float:
     mu_pred = np.mean(pred_unc_map)
     sigma_gt = np.std(gt_unc_map, ddof=1)
     sigma_pred = np.std(pred_unc_map, ddof=1)
+    
+    # Handle division by zero: if either array is constant, return 0 or NaN
+    if sigma_gt == 0 or sigma_pred == 0:
+        return 0.0
+    
     gt_norm = gt_unc_map - mu_gt
     pred_norm = pred_unc_map - mu_pred
     prod = np.sum(np.multiply(gt_norm, pred_norm))
