@@ -172,11 +172,11 @@ def get_correct_binary_multirater(gt_raters: np.ndarray, pred: np.ndarray) -> np
 def get_max_prob_for_pred_classes(probs_per_fold: Dict[int, np.ndarray], consensus_pred: np.ndarray) -> np.ndarray:
     """Get maximum predicted probability for the consensus predicted classes."""
     probs_pred_class = []
+    consensus_pred_int = consensus_pred.astype(int)
     for fold_probs in probs_per_fold.values():
-        consensus_pred = consensus_pred.astype(int)
         probs = np.take_along_axis(
             fold_probs,
-            consensus_pred[np.newaxis, ...],
+            consensus_pred_int[np.newaxis, ...],
             axis=0
         ).squeeze(axis=0)
         probs_pred_class.append(probs)
