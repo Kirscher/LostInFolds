@@ -111,9 +111,10 @@ def load_ground_truth(gt_dir: str, case_id: str, num_raters: int, consensus_type
         gt_path = os.path.join(gt_dir, f"{case_id}.nii.gz")
         if os.path.exists(gt_path):
             img = nib.load(gt_path)
+            data = img.get_fdata().astype(np.int32)
             gt = {
-                "raters": img.get_fdata().astype(np.int32).expand_dims(axis=0),
-                "consensus": img.get_fdata().astype(np.int32),
+                "raters": np.expand_dims(data, axis=0),
+                "consensus": data,
             }
             return gt, img.affine
         else:
