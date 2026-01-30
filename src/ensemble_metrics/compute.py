@@ -10,13 +10,8 @@ import numpy as np
 from tqdm import tqdm
 
 from .metrics import METRICS
-from .utils import (
-    discover_folds,
-    discover_cases,
-    load_prediction,
-    load_ground_truth,
-    standardize_prediction,
-)
+from .utils import (discover_cases, discover_folds, load_ground_truth,
+                    load_prediction, standardize_prediction)
 
 
 def main():
@@ -42,6 +37,18 @@ def main():
         help="Optional ground truth directory"
     )
     parser.add_argument(
+        "--num-raters",
+        type=int,
+        default=3,
+        help="Number of raters for ground truth"
+    )
+    parser.add_argument(
+        "--consensus-type",
+        type=str,
+        default="staple",
+        help="Consensus method for ground truth. Can be 'staple', 'majority', or 'none'. If 'none', the majority vote is calculated based on available raters."
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         required=True,
@@ -50,7 +57,7 @@ def main():
     parser.add_argument(
         "--metrics",
         type=str,
-        default="mutual_information,mean_entropy,pairwise_dice,consensus_segmentation",
+        default="predictive_entropy,mutual_information,expected_entropy,pairwise_dice,consensus_segmentation,ncc,ace,ged,aurc",
         help="Comma-separated list of metrics to compute"
     )
     parser.add_argument(
@@ -61,6 +68,11 @@ def main():
     )
     
     args = parser.parse_args()
+
+    if args.consensus_type not in ["staple", "majority", "none"]:
+        raise ValueError("consensus-type must be one of 'staple', 'majority', or 'none'")
+    if args.consensus_type == "none":
+        args.consensus_type = None
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -129,7 +141,7 @@ def main():
         
         gt = None
         if args.gt_dir:
-            gt_data = load_ground_truth(args.gt_dir, case_id)
+            gt_data = load_ground_truth(gt_dir=args.gt_dir, case_id=case_id, num_raters=args.num_raters, consensus_type=args.consensus_type)
             if gt_data is not None:
                 gt, gt_affine = gt_data
                 if affine is None:

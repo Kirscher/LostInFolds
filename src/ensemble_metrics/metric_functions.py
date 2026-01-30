@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Core metric computation functions for ensemble predictions."""
 
-import numpy as np
+from typing import Dict, List, Optional, Tuple, Union
+
 import nibabel as nib
+import numpy as np
+from scipy.ndimage import distance_transform_edt
+from sklearn import preprocessing as sk_preprocess
+from sklearn import utils as sk_utils
 
 
 def load_array(filepath: str, is_ensemble: bool = False) -> np.ndarray:
@@ -68,3 +73,371 @@ def compute_dice(
         dice_scores[f"class_{c}"] = float(dice)
     
     return dice_scores
+
+
+def compute_ncc(gt_unc_map: np.ndarray, pred_unc_map: np.ndarray) -> float:
+    """
+    Compute the normalized cross correlation between a ground truth uncertainty and a predicted uncertainty map,
+    to determine how similar the maps are.
+    :param gt_unc_map: the ground truth uncertainty map based on the rater variability
+    :param pred_unc_map: the predicted uncertainty map
+    :return: float: the normalized cross correlation between gt and predicted uncertainty map
+    """
+    mu_gt = np.mean(gt_unc_map)
+    mu_pred = np.mean(pred_unc_map)
+    sigma_gt = np.std(gt_unc_map, ddof=1)
+    sigma_pred = np.std(pred_unc_map, ddof=1)
+    
+    # Handle division by zero: if either array is constant, return 0 or NaN
+    if sigma_gt == 0 or sigma_pred == 0:
+        return 0.0
+    
+    gt_norm = gt_unc_map - mu_gt
+    pred_norm = pred_unc_map - mu_pred
+    prod = np.sum(np.multiply(gt_norm, pred_norm))
+    ncc = (1 / (np.size(gt_unc_map) * sigma_gt * sigma_pred)) * prod
+    return ncc
+
+
+def get_repeated_interleave(labels: np.ndarray, num_repeats: int) -> np.ndarray:
+    """Repeat the labels along the first axis in a "interleave" (from torch.repeat_interleaved) manner.
+    That is, given lables l1, l2, l3, they are repeated as l1, l1, ..., l2, l2, ..., l3, l3, ..."""
+    return np.repeat(labels, num_repeats, axis=0)
+
+
+def get_repeated_stacked(labels: np.ndarray, num_repeats: int) -> np.ndarray:
+    """Repeat the labels along the first axis in a "stacked" manner.
+    That is, given lables l1, l2, l3, they are repeated as l1, l2, l3, l1, l2, l3, ..."""
+    return np.tile(labels, (num_repeats, *((labels.ndim - 1) * [1])))
+
+
+def get_dist_dict_from_dice(dice_dict: Dict[str, float]) -> Dict[str, float]:
+    """Convert Dice scores to distance metrics."""
+    dist_dict = {}
+    for key, dice in dice_dict.items():
+        dist = 1.0 - dice
+        dist_dict[key] = dist
+    return dist_dict
+
+
+def compute_ged(gt_raters: np.ndarray, ensemble_pred: np.ndarray, num_classes: int, include_background:bool =False) -> Dict[str, float]:
+    """Compute Generalized Energy Distance (GED) metric."""
+    """
+    Input:
+        gt_raters: np.ndarray of shape (num_raters, H, W, (D))
+        ensemble_pred: np.ndarray of shape (num_folds, H, W, (D)) representing predicted segmentations from each fold
+    Output:
+        ged: Dict with GED per class and overall GED
+    """
+    gt_repeat_pred_interleave = get_repeated_interleave(labels=gt_raters, num_repeats=ensemble_pred.shape[0])
+    pred_repeat_gt_stacked = get_repeated_stacked(labels=ensemble_pred, num_repeats=gt_raters.shape[0])
+    dice_gt_pred = compute_dice(gt_repeat_pred_interleave, pred_repeat_gt_stacked, num_classes=num_classes, include_background=include_background)
+    dice_gt_pred["overall_dice"] = float(np.mean(list(dice_gt_pred.values())))
+    dist_gt_pred = get_dist_dict_from_dice(dice_gt_pred)
+
+    gt_repeat_gt_interleave = get_repeated_interleave(labels=gt_raters, num_repeats=gt_raters.shape[0])
+    gt_repeat_gt_stacked = get_repeated_stacked(labels=gt_raters, num_repeats=gt_raters.shape[0])
+    dice_gt_gt = compute_dice(gt_repeat_gt_interleave, gt_repeat_gt_stacked, num_classes=num_classes, include_background=include_background)
+    dice_gt_gt["overall_dice"] = float(np.mean(list(dice_gt_gt.values())))
+    dist_gt_gt = get_dist_dict_from_dice(dice_gt_gt)
+
+    pred_repeat_pred_interleave = get_repeated_interleave(labels=ensemble_pred, num_repeats=ensemble_pred.shape[0])
+    pred_repeat_pred_stacked = get_repeated_stacked(labels=ensemble_pred, num_repeats=ensemble_pred.shape[0])
+    dice_pred_pred = compute_dice(pred_repeat_pred_interleave, pred_repeat_pred_stacked, num_classes=num_classes, include_background=include_background)
+    dice_pred_pred["overall_dice"] = float(np.mean(list(dice_pred_pred.values())))
+    dist_pred_pred = get_dist_dict_from_dice(dice_pred_pred)
+
+    ged_dict = {}
+    class_range = range(num_classes) if include_background else range(1, num_classes)
+    for c in class_range:
+        ged = 2 * dist_gt_pred[f"class_{c}"] - dist_gt_gt[f"class_{c}"] - dist_pred_pred[f"class_{c}"]
+        ged_dict[f"class_{c}"] = ged
+    ged_dict["overall_ged"] = 2 * dist_gt_pred["overall_dice"] - dist_gt_gt["overall_dice"] - dist_pred_pred["overall_dice"]
+
+    return ged_dict
+
+
+def get_correct_binary_multirater(gt_raters: np.ndarray, pred: np.ndarray) -> np.ndarray:
+    """Get binary correctness array for multiple raters."""
+    """
+    Input:
+        gt_raters: np.ndarray of shape (num_raters, H, W, (D))
+        pred: np.ndarray of shape (H, W, (D)) representing the average predicted segmentation
+    Output:
+        correct: flattened np array of shape (num_raters*H*W*(D)) with binary values indicating correctness
+    """
+    num_raters = gt_raters.shape[0]
+    correct = np.zeros_like(gt_raters, dtype=int)
+    for i in range(num_raters):
+        correct[i] = (gt_raters[i] == pred).astype(int)
+    correct = correct.ravel()
+    return correct
+
+
+def get_max_prob_for_pred_classes(probs_per_fold: Dict[int, np.ndarray], consensus_pred: np.ndarray) -> np.ndarray:
+    """Get maximum predicted probability for the consensus predicted classes."""
+    probs_pred_class = []
+    consensus_pred_int = consensus_pred.astype(int)
+    for fold_probs in probs_per_fold.values():
+        probs = np.take_along_axis(
+            fold_probs,
+            consensus_pred_int[np.newaxis, ...],
+            axis=0
+        ).squeeze(axis=0)
+        probs_pred_class.append(probs)
+    probs_pred_class = np.stack(probs_pred_class, axis=0)
+    max_probs_pred_class = np.max(probs_pred_class, axis=0)
+    return max_probs_pred_class
+
+
+def calib_stats(correct, calib_confids, n_bins=20):
+    """Calculate calibration statistics."""
+    y_true = sk_utils.column_or_1d(correct)
+    y_prob = sk_utils.column_or_1d(calib_confids)
+
+    if y_prob.min() < 0 or y_prob.max() > 1:
+        raise ValueError(
+            "y_prob has values outside [0, 1] and normalize is " "set to False."
+        )
+
+    labels = np.unique(y_true)
+    if len(labels) > 2:
+        raise ValueError(
+            "Only binary classification is supported. " f"Provided labels {labels}."
+        )
+    y_true = sk_preprocess.label_binarize(y_true, classes=labels)[:, 0]
+
+    bins = np.linspace(0.0, 1.0 + 1e-8, n_bins + 1)
+
+    binids = np.digitize(y_prob, bins) - 1
+
+    bin_sums = np.bincount(binids, weights=y_prob, minlength=len(bins))
+    bin_true = np.bincount(binids, weights=y_true, minlength=len(bins))
+    bin_total = np.bincount(binids, minlength=len(bins))
+
+    nonzero = bin_total != 0
+    num_nonzero = len(nonzero[nonzero == True])
+    prob_true = bin_true[nonzero] / bin_total[nonzero]
+    prob_pred = bin_sums[nonzero] / bin_total[nonzero]
+    prob_total = bin_total[nonzero] / bin_total.sum()
+
+    bin_discrepancies = np.abs(prob_true - prob_pred)
+    return bin_discrepancies, prob_total, num_nonzero
+
+
+def compute_ace(correct, calib_confids, n_bins=20):
+    bin_discrepancies, _, num_nonzero = calib_stats(correct, calib_confids, n_bins=n_bins)
+    return (1 / num_nonzero) * np.sum(bin_discrepancies)
+
+
+# ------------------------------------------------------------
+# Boundary & distance utilities
+# ------------------------------------------------------------
+
+def find_boundary_mask(labels: np.ndarray) -> np.ndarray:
+    """
+    Returns boolean mask of boundary pixels.
+
+    A pixel is boundary if any neighbor has different label.
+    Works for 2D or ND arrays.
+    """
+    labels = np.asarray(labels)
+    boundary = np.zeros_like(labels, dtype=bool)
+
+    for axis in range(labels.ndim):
+        diff = np.diff(labels, axis=axis)
+        pad1 = [(0, 0)] * labels.ndim
+        pad2 = [(0, 0)] * labels.ndim
+
+        pad1[axis] = (1, 0)
+        pad2[axis] = (0, 1)
+
+        boundary |= np.pad(diff != 0, pad1)
+        boundary |= np.pad(diff != 0, pad2)
+
+    return boundary
+
+
+def unsigned_distance_to_boundary(labels: np.ndarray) -> np.ndarray:
+    """
+    Distance from each pixel to nearest ground-truth boundary.
+    """
+    boundary = find_boundary_mask(labels)
+    # distance_transform_edt computes distance to nearest zero
+    dist = distance_transform_edt(~boundary)
+    return dist
+
+
+def ring_band_masks(
+    dist: np.ndarray,
+    edges: List[float],
+) -> List[np.ndarray]:
+    """
+    Creates masks for distance rings:
+    [edges[i], edges[i+1])
+    """
+    bands = []
+    for i in range(len(edges) - 1):
+        lo = edges[i]
+        hi = edges[i + 1]
+        bands.append((dist >= lo) & (dist < hi))
+    return bands
+
+
+# ------------------------------------------------------------
+# BA-ECE
+# ------------------------------------------------------------
+
+def compute_ba_ece(
+    confidence: np.ndarray,
+    labels: np.ndarray,
+    pred_labels: np.ndarray,
+    edges: Union[List[float], Tuple[float, ...]] = (0, 3, 7, 15, np.inf),
+) -> Dict[str, object]:
+    """
+    Boundary-Aware Expected Calibration Error (BA-ECE)
+
+    Parameters
+    ----------
+    confidence :
+        Confidence of the prediction.
+    labels : (n_raters, ...)
+        Ground-truth labels. Contains multiple raters along first axis.
+    pred_labels : optional (...)
+        Predicted class labels.
+    edges : distance band edges.
+
+    Returns
+    -------
+    dict with:
+        ba_ece : float
+        bands : list of per-band dicts
+        counts : list of counts per band
+    """
+
+    # Distance to GT boundary
+    dist = []
+    bands = []
+    for rater_idx in range(labels.shape[0]):
+        dist_rater = unsigned_distance_to_boundary(labels[rater_idx])
+        bands_rater = ring_band_masks(dist_rater, list(edges))
+        dist.append(dist_rater)
+        bands.append(bands_rater)
+    dist = np.stack(dist, axis=0)
+    bands = np.stack(bands, axis=0)
+
+    confidence = confidence.reshape(-1)
+    y = labels.reshape(-1).astype(int)
+    pred = pred_labels.reshape(-1).astype(int)
+    dist_flat = dist.reshape(-1)
+
+    # Uncertainty = 1 - confidence
+    # confidence = P.max(axis=1)
+    uncertainty = 1.0 - confidence
+
+    error = (pred != y).astype(np.float32)
+
+    total_weight = 0.0
+    weighted_sum = 0.0
+
+    band_results = []
+    counts = []
+
+    for i, _ in enumerate(bands[1]):
+        mask = bands[:, i, ...]
+        sel = mask.reshape(-1)
+        cnt = int(sel.sum())
+        counts.append(cnt)
+
+        if cnt == 0:
+            band_results.append(
+                dict(
+                    band=i,
+                    count=0,
+                    mean_uncertainty=np.nan,
+                    mean_error=np.nan,
+                    calibration_error=np.nan,
+                    mean_distance=np.nan,
+                    weight=0.0,
+                )
+            )
+            continue
+
+        mean_unc = float(uncertainty[sel].mean())
+        mean_err = float(error[sel].mean())
+        cal_err = abs(mean_unc - mean_err)
+        mean_dist = float(dist_flat[sel].mean())
+
+        weight = 1.0 / (mean_dist + 1.0)
+
+        total_weight += weight
+        weighted_sum += weight * cal_err
+
+        band_results.append(
+            dict(
+                band=i,
+                count=cnt,
+                mean_uncertainty=mean_unc,
+                mean_error=mean_err,
+                calibration_error=cal_err,
+                mean_distance=mean_dist,
+                weight=weight,
+            )
+        )
+
+    ba = float(weighted_sum / max(total_weight, 1e-12))
+
+    return {
+        "ba_ece": ba,
+        "bands": band_results,
+        "counts": counts,
+    }
+
+
+def rc_curve_stats(
+    risks: np.ndarray, confids: np.ndarray
+) -> tuple[list[float], list[float], list[float]]:
+    coverages = []
+    selective_risks = []
+    assert (
+        len(risks.shape) == 1 and len(confids.shape) == 1 and len(risks) == len(confids)
+    )
+
+    n_samples = len(risks)
+    if n_samples == 0:
+        return [], [], []
+    idx_sorted = np.argsort(confids)
+
+    coverage = n_samples
+    error_sum = sum(risks[idx_sorted])
+
+    coverages.append(coverage / n_samples)
+    selective_risks.append(error_sum / n_samples)
+
+    weights = []
+
+    tmp_weight = 0
+    for i in range(0, len(idx_sorted) - 1):
+        coverage = coverage - 1
+        error_sum = error_sum - risks[idx_sorted[i]]
+        tmp_weight += 1
+        if i == 0 or confids[idx_sorted[i]] != confids[idx_sorted[i - 1]]:
+            coverages.append(coverage / n_samples)
+            selective_risks.append(error_sum / (n_samples - 1 - i))
+            weights.append(tmp_weight / n_samples)
+            tmp_weight = 0
+
+    # add a well-defined final point to the RC-curve.
+    if tmp_weight > 0:
+        coverages.append(0)
+        selective_risks.append(selective_risks[-1])
+        weights.append(tmp_weight / n_samples)
+
+    return coverages, selective_risks, weights
+
+
+def compute_aurc(risks: np.ndarray, confids: np.ndarray):
+    _, risks, weights = rc_curve_stats(risks, confids)
+    return sum(
+        [(risks[i] + risks[i + 1]) * 0.5 * weights[i] for i in range(len(weights))]
+    )

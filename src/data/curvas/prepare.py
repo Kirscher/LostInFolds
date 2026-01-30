@@ -1,11 +1,88 @@
 import argparse
 import json
 from pathlib import Path
+from dataclasses import dataclass
+from typing import Optional, List
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from shutil import copy2
 import SimpleITK as sitk
+
+
+@dataclass
+class ProcessingConfig:
+    """Configuration for processing patient annotations to create consensus."""
+    threshold: float = 0.5
+    min_annotations: int = 3
+    overwrite: bool = False
+    labels: Optional[List[int]] = None
+
+
+def process_patient(patient_dir: Path, config: ProcessingConfig) -> str:
+    """
+    Process a patient directory to create consensus segmentation using STAPLE.
+    
+    Args:
+        patient_dir: Path to patient directory containing annotation files
+        config: Processing configuration
+        
+    Returns:
+        Patient directory name
+    """
+    patient_dir = Path(patient_dir)
+    
+    # Find all annotation files
+    annotation_files = sorted(patient_dir.glob("annotation_*.nii.gz"))
+    
+    if len(annotation_files) < config.min_annotations:
+        raise ValueError(
+            f"Found {len(annotation_files)} annotations, but minimum required is {config.min_annotations}"
+        )
+    
+    # Check if output files already exist
+    seg_out = patient_dir / "consensus_seg_STAPLE.nii.gz"
+    prob_out = patient_dir / "consensus_prob_STAPLE.nii.gz"
+    
+    if not config.overwrite and seg_out.exists() and prob_out.exists():
+        return patient_dir.name
+    
+    # Load reference image to get geometry
+    image_path = patient_dir / "image.nii.gz"
+    if not image_path.exists():
+        raise FileNotFoundError(f"Reference image not found: {image_path}")
+    
+    reference_image = sitk.ReadImage(str(image_path))
+    
+    # Load all annotation images
+    annotation_images = []
+    for ann_file in annotation_files:
+        ann_img = sitk.ReadImage(str(ann_file))
+        # Ensure same geometry as reference
+        ann_img = sitk.Resample(ann_img, reference_image)
+        annotation_images.append(ann_img)
+    
+    # Apply STAPLE to create consensus
+    staple_filter = sitk.STAPLEImageFilter()
+    staple_filter.SetForegroundValue(1)  # Assuming binary segmentation with foreground=1
+    
+    # STAPLE expects a list of images
+    consensus_prob = staple_filter.Execute(*annotation_images)
+    
+    # Create binary segmentation by thresholding
+    consensus_seg = sitk.BinaryThreshold(
+        consensus_prob,
+        lowerThreshold=config.threshold,
+        upperThreshold=1.0,
+        insideValue=1,
+        outsideValue=0
+    )
+    
+    # Save outputs
+    sitk.WriteImage(consensus_seg, str(seg_out))
+    sitk.WriteImage(consensus_prob, str(prob_out))
+    
+    return patient_dir.name
 
 
 class CurvasDataPreparer:

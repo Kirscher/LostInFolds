@@ -2,17 +2,18 @@
 """Ensemble metric classes for uncertainty and agreement metrics."""
 
 import os
-from typing import Dict, List, Optional, Tuple, Any
-import numpy as np
+from typing import Any, Dict, List, Optional, Tuple
+
 import nibabel as nib
+import numpy as np
 import pandas as pd
 
-from .metric_functions import (
-    compute_mutual_information_wrapper,
-    compute_ensemble_entropy,
-    compute_dice,
-    compute_entropy_map,
-)
+from .metric_functions import (compute_ace, compute_aurc, compute_ba_ece,
+                               compute_dice, compute_ensemble_entropy,
+                               compute_entropy_map, compute_ged,
+                               compute_mutual_information_wrapper, compute_ncc,
+                               get_correct_binary_multirater,
+                               get_max_prob_for_pred_classes)
 
 
 class BaseMetric:
@@ -36,6 +37,37 @@ class BaseMetric:
     def export_summaries(self) -> None:
         """Export summary tables/statistics after processing all cases."""
         pass
+
+
+class PredictiveEntropyMetric(BaseMetric):
+    """Compute mean entropy maps across folds."""
+    
+    def compute_case(
+        self,
+        case_id: str,
+        preds_per_fold: Dict[int, np.ndarray],
+        gt: Optional[np.ndarray] = None,
+        affine: Optional[np.ndarray] = None,
+        case_output_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Compute mean entropy map for a case."""
+        fold_indices = sorted(preds_per_fold.keys())
+        ensemble_probs = np.stack([preds_per_fold[f] for f in fold_indices], axis=0)
+        mean_probs = np.mean(ensemble_probs, axis=0)
+        predictive_entropy_map = compute_entropy_map(mean_probs)
+        
+        if case_output_dir and affine is not None:
+            if not os.path.exists(case_output_dir):
+                os.makedirs(case_output_dir, exist_ok=True)
+            entropy_img = nib.Nifti1Image(predictive_entropy_map.astype(np.float32), affine)
+            nib.save(entropy_img, os.path.join(case_output_dir, "predictive_entropy_map.nii.gz"))
+        
+        return {
+            "case_id": case_id,
+            "predictive_entropy_mean": float(np.mean(predictive_entropy_map)),
+            "predictive_entropy_std": float(np.std(predictive_entropy_map)),
+            "predictive_entropy_max": float(np.max(predictive_entropy_map)),
+        }
 
 
 class MutualInformationMetric(BaseMetric):
@@ -68,7 +100,7 @@ class MutualInformationMetric(BaseMetric):
         }
 
 
-class MeanEntropyMetric(BaseMetric):
+class ExpectedEntropyMetric(BaseMetric):
     """Compute mean entropy maps across folds."""
     
     def compute_case(
@@ -82,19 +114,19 @@ class MeanEntropyMetric(BaseMetric):
         """Compute mean entropy map for a case."""
         fold_indices = sorted(preds_per_fold.keys())
         entropies = [compute_entropy_map(preds_per_fold[f]) for f in fold_indices]
-        mean_entropy_map = np.mean(entropies, axis=0)
+        expected_entropy_map = np.mean(entropies, axis=0)
         
         if case_output_dir and affine is not None:
             if not os.path.exists(case_output_dir):
                 os.makedirs(case_output_dir, exist_ok=True)
-            entropy_img = nib.Nifti1Image(mean_entropy_map.astype(np.float32), affine)
-            nib.save(entropy_img, os.path.join(case_output_dir, "mean_entropy_map.nii.gz"))
+            entropy_img = nib.Nifti1Image(expected_entropy_map.astype(np.float32), affine)
+            nib.save(entropy_img, os.path.join(case_output_dir, "expected_entropy_map.nii.gz"))
         
         return {
             "case_id": case_id,
-            "mean_entropy_mean": float(np.mean(mean_entropy_map)),
-            "mean_entropy_std": float(np.std(mean_entropy_map)),
-            "mean_entropy_max": float(np.max(mean_entropy_map)),
+            "expected_entropy_mean": float(np.mean(expected_entropy_map)),
+            "expected_entropy_std": float(np.std(expected_entropy_map)),
+            "expected_entropy_max": float(np.max(expected_entropy_map)),
         }
 
 
@@ -142,6 +174,10 @@ class PairwiseDiceMetric(BaseMetric):
                     "overall_dice": overall_dice,
                     **dice_scores
                 })
+        pairwise_dice_df = pd.DataFrame(pairwise_dice)
+        pairwise_dice_df.to_csv(
+            os.path.join(case_output_dir, "pairwise_dice.csv"), index=False
+        )
         
         self.pairwise_results.extend(pairwise_dice)
         return {"case_id": case_id}
@@ -200,9 +236,10 @@ class ConsensusSegmentationMetric(BaseMetric):
         
         if gt is not None:
             num_classes = mean_probs.shape[0]
-            dice_scores = compute_dice(gt, consensus_seg, num_classes, include_background=False)
+            gt_consensus = gt["consensus"]
+            dice_scores = compute_dice(gt_consensus, consensus_seg, num_classes, include_background=False)
             fold_dice_scores = {
-                f"fold_{f}": compute_dice(gt, np.argmax(preds_per_fold[f], axis=0), num_classes, include_background=False)
+                f"fold_{f}": compute_dice(gt_consensus, np.argmax(preds_per_fold[f], axis=0), num_classes, include_background=False)
                 for f in fold_indices
             }
             
@@ -217,6 +254,10 @@ class ConsensusSegmentationMetric(BaseMetric):
                 for k, v in fold_dice.items():
                     gt_comparison_row[f"{fold_name}_{k}"] = float(v)
             
+            gt_comparison_df = pd.DataFrame([gt_comparison_row])
+            gt_comparison_df.to_csv(
+                os.path.join(case_output_dir, "dice_vs_gt.csv"), index=False
+            )
             self.gt_comparison_results.append(gt_comparison_row)
         
         return {"case_id": case_id}
@@ -238,9 +279,257 @@ class ConsensusSegmentationMetric(BaseMetric):
         )
 
 
+class NCCMetric(BaseMetric):
+    """Compute Normalized Cross-Correlation (NCC) metric."""
+
+    def __init__(self, output_dir: str):
+        super().__init__(output_dir)
+        self.ncc_results = []
+    
+    def compute_case(
+        self,
+        case_id: str,
+        preds_per_fold: Dict[int, np.ndarray],
+        gt: Optional[np.ndarray] = None,
+        affine: Optional[np.ndarray] = None,
+        case_output_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Compute NCC for a case. Requires expected entropy to be calculated first."""
+        gt_var = np.var(gt["raters"], axis=0)
+        expected_entropy_path = os.path.join(case_output_dir, "expected_entropy_map.nii.gz")
+        if not os.path.exists(expected_entropy_path):
+            raise FileNotFoundError(f"Expected entropy map not found for case {case_id}")
+        expected_entropy_pred = nib.load(expected_entropy_path).get_fdata()
+        ncc_value = compute_ncc(expected_entropy_pred, gt_var)
+        self.ncc_results.append({
+            "case_id": case_id,
+            "ncc": float(ncc_value),
+        })
+
+        return {"case_id": case_id}
+    
+    def export_summaries(self) -> None:
+        """Export NCC summaries."""
+        if not self.ncc_results:
+            return
+        
+        self.ncc_results.append({
+            "case_id": "mean",
+            "ncc": float(np.mean([r["ncc"] for r in self.ncc_results])),
+        })
+        df = pd.DataFrame(self.ncc_results)
+        df.to_csv(os.path.join(self.output_dir, "ncc.csv"), index=False)
+
+
+class GEDMetric(BaseMetric):
+    """Compute Generalized Energy Distance (GED) metric."""
+    def __init__(self, output_dir: str):
+        super().__init__(output_dir)
+        self.ged_results = []
+    
+    def compute_case(
+        self,
+        case_id: str,
+        preds_per_fold: Dict[int, np.ndarray],
+        gt: Optional[np.ndarray] = None,
+        affine: Optional[np.ndarray] = None,
+        case_output_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Compute GED for a case."""
+        num_classes = preds_per_fold[0].shape[0]
+        fold_indices = sorted(preds_per_fold.keys())
+        ensemble_preds = np.stack([np.argmax(preds_per_fold[f], axis=0) for f in fold_indices], axis=0)
+        ged = compute_ged(gt_raters=gt["raters"], ensemble_pred=ensemble_preds, num_classes=num_classes)
+
+        ged_row = {
+            "case_id": case_id,
+            **ged
+        }
+        self.ged_results.append(ged_row)
+        return { "case_id": case_id }
+    
+    def export_summaries(self) -> None:
+        """Export GED summaries."""
+        if not self.ged_results:
+            return
+        
+        self.ged_results.append({
+            "case_id": "mean",
+            **{k: float(np.mean([r[k] for r in self.ged_results])) for k in self.ged_results[0] if k != "case_id"},
+        })
+        ged_df = pd.DataFrame(self.ged_results)
+        ged_df.to_csv(os.path.join(self.output_dir, "ged.csv"), index=False)
+
+
+class ACEMeric(BaseMetric):
+    """Compute Average Calibration Error."""
+    
+    def __init__(self, output_dir: str):
+        super().__init__(output_dir)
+        self.ace_results = []
+
+    def compute_case(
+            self,
+            case_id: str,
+            preds_per_fold: Dict[int, np.ndarray],
+            gt: Optional[np.ndarray] = None,
+            affine: Optional[np.ndarray] = None,
+            case_output_dir: Optional[str] = None
+        ) -> Dict[str, Any]:
+        """Compute ACE for a case. Requires consensus prediction to be calculated first."""
+        conensus_pred_path = os.path.join(case_output_dir, "consensus_seg.nii.gz")
+        if not os.path.exists(conensus_pred_path):
+            raise FileNotFoundError(f"Consensus segmentation not found for case {case_id}")
+        consensus_pred = nib.load(conensus_pred_path).get_fdata()
+        gt_raters = gt["raters"]
+        correct = get_correct_binary_multirater(gt_raters=gt_raters, pred=consensus_pred)
+        conf = get_max_prob_for_pred_classes(probs_per_fold=preds_per_fold, consensus_pred=consensus_pred)
+        conf = np.repeat(conf[np.newaxis, ...], gt["raters"].shape[0], axis=0).ravel()
+        ace_value = compute_ace(correct=correct, calib_confids=conf, n_bins=20)
+        self.ace_results.append({
+            "case_id": case_id,
+            "ace": float(ace_value),
+        })
+        return {"case_id": case_id}
+    
+    def export_summaries(self) -> None:
+        """Export ACE summaries."""
+        if not self.ace_results:
+            return
+        
+        self.ace_results.append({
+            "case_id": "mean",
+            "ace": float(np.mean([r["ace"] for r in self.ace_results])),
+        })
+        df = pd.DataFrame(self.ace_results)
+        df.to_csv(os.path.join(self.output_dir, "ace.csv"), index=False)
+
+
+class BAECEMetric(BaseMetric):
+    """Compute Boundary Aware Calibration Error."""
+    
+    def __init__(self, output_dir: str):
+        super().__init__(output_dir)
+        self.baece_results = []
+
+    def compute_case(
+            self,
+            case_id: str,
+            preds_per_fold: Dict[int, np.ndarray],
+            gt: Optional[np.ndarray] = None,
+            affine: Optional[np.ndarray] = None,
+            case_output_dir: Optional[str] = None
+        ) -> Dict[str, Any]:
+        """Compute BAECE for a case. Requires consensus prediction to be calculated first."""
+        conensus_pred_path = os.path.join(case_output_dir, "consensus_seg.nii.gz")
+        if not os.path.exists(conensus_pred_path):
+            raise FileNotFoundError(f"Consensus segmentation not found for case {case_id}")
+        consensus_pred = nib.load(conensus_pred_path).get_fdata()
+        conf = get_max_prob_for_pred_classes(probs_per_fold=preds_per_fold, consensus_pred=consensus_pred)
+        conf = np.repeat(conf[np.newaxis, ...], gt["raters"].shape[0], axis=0)
+        consensus_pred = np.repeat(consensus_pred[np.newaxis, ...], gt["raters"].shape[0], axis=0)
+        ba_ece = compute_ba_ece(confidence=conf, labels=gt["raters"], pred_labels=consensus_pred)
+        self.baece_results.append({
+            "case_id": case_id,
+            **ba_ece
+        })
+        return {"case_id": case_id}
+    
+    def export_summaries(self) -> None:
+        """Export BACE summaries."""
+        if not self.baece_results:
+            return
+        baece_results_summary = [{
+            "case_id": r["case_id"],
+            "ba_ece": r["ba_ece"]
+        } for r in self.baece_results]
+        baece_results_summary.append({
+            "case_id": "mean",
+            "ba_ece": float(np.mean([r["ba_ece"] for r in self.baece_results])),
+        })
+        df = pd.DataFrame(baece_results_summary)
+        df.to_csv(os.path.join(self.output_dir, "ba_ece.csv"), index=False)
+
+
+class AURCMetric(BaseMetric):
+    """Compute Area Under the Risk-Coverage Curve (AURC) metric."""
+    def __init__(self, output_dir: str):
+        super().__init__(output_dir)
+        self.risks = []
+        self.confids = []
+        self.num_classes = None
+    
+    def compute_case(
+        self,
+        case_id: str,
+        preds_per_fold: Dict[int, np.ndarray],
+        gt: Optional[np.ndarray] = None,
+        affine: Optional[np.ndarray] = None,
+        case_output_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Compute risks and confids for a case. The final AURC is computed in export_summaries.
+        Assumes dice and pairwise dice to be available.
+        """
+        dice_per_case_path = os.path.join(case_output_dir, "dice_vs_gt.csv")
+        pairwise_dice_path = os.path.join(case_output_dir, "pairwise_dice.csv")
+        if not os.path.exists(dice_per_case_path):
+            raise FileNotFoundError(f"Dice per case file not found for case {case_id}")
+        if not os.path.exists(pairwise_dice_path):
+            raise FileNotFoundError(f"Pairwise Dice per case file not found for case {case_id}")
+        dice_df = pd.read_csv(dice_per_case_path)
+        pairwise_dice_df = pd.read_csv(pairwise_dice_path)
+        dice = dice_df[dice_df["case_id"] == case_id]
+        pairwise_dice = pairwise_dice_df[pairwise_dice_df["case_id"] == case_id]
+        pairwise_dice_mean = pairwise_dice.drop(["case_id", "fold_i", "fold_j"], axis=1).mean()
+        
+        self.num_classes = preds_per_fold[0].shape[0]
+        risk_dict = {}
+        confid_dict = {}
+        for c in range(1, self.num_classes):
+            dice_c = dice[f"consensus_class_{c}"].values[0]
+            pairwise_dice_c = pairwise_dice_mean[f"class_{c}"]
+            risk = 1.0 - dice_c
+            risk_dict[f"class_{c}"] = risk
+            confid_dict[f"class_{c}"] = pairwise_dice_c
+        risk_dict["overall_risk"] = 1.0 - dice["consensus_overall_dice"].values[0]
+        confid_dict["overall_confid"] = pairwise_dice_mean["overall_dice"]
+        
+        self.risks.append({
+            "case_id": case_id,
+            **risk_dict})
+        self.confids.append({
+            "case_id": case_id,
+            **confid_dict})
+
+        return { "case_id": case_id }
+    
+    def export_summaries(self) -> None:
+        """Export AURC summaries."""
+        if not self.risks or not self.confids:
+            return
+        aurc_dict = {}
+        for i in range(1, self.num_classes):
+            risks = np.array([r[f"class_{i}"] for r in self.risks])
+            confids = np.array([c[f"class_{i}"] for c in self.confids])
+            aurc_dict[f"class_{i}"] = compute_aurc(risks, confids)
+        overall_risks = np.array([r["overall_risk"] for r in self.risks])
+        overall_confids = np.array([c["overall_confid"] for c in self.confids])
+        aurc_dict["overall_aurc"] = compute_aurc(overall_risks, overall_confids)
+        
+        aurc_df = pd.DataFrame([aurc_dict])
+        aurc_df.to_csv(os.path.join(self.output_dir, "aurc.csv"), index=False)
+
+
 METRICS = {
+    "predictive_entropy": PredictiveEntropyMetric,
     "mutual_information": MutualInformationMetric,
-    "mean_entropy": MeanEntropyMetric,
+    "expected_entropy": ExpectedEntropyMetric,
     "pairwise_dice": PairwiseDiceMetric,
     "consensus_segmentation": ConsensusSegmentationMetric,
+    "ncc": NCCMetric,
+    "ace": ACEMeric,
+    "ba_ece": BAECEMetric,
+    "ged": GEDMetric,
+    "aurc": AURCMetric,
 }
