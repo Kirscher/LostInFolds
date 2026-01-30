@@ -404,6 +404,8 @@ def rc_curve_stats(
     )
 
     n_samples = len(risks)
+    if n_samples == 0:
+        return [], [], []
     idx_sorted = np.argsort(confids)
 
     coverage = n_samples
