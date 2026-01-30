@@ -10,8 +10,8 @@ import pandas as pd
 
 from .metric_functions import (compute_ace, compute_dice,
                                compute_ensemble_entropy, compute_entropy_map,
-                               compute_mutual_information_wrapper, compute_ncc,
-                               get_correct_binary_multirater,
+                               compute_ged, compute_mutual_information_wrapper,
+                               compute_ncc, get_correct_binary_multirater,
                                get_max_prob_for_pred_classes)
 
 
@@ -312,6 +312,46 @@ class NCCMetric(BaseMetric):
         df.to_csv(os.path.join(self.output_dir, "ncc.csv"), index=False)
 
 
+class GEDMetric(BaseMetric):
+    """Compute Generalized Energy Distance (GED) metric."""
+    def __init__(self, output_dir: str):
+        super().__init__(output_dir)
+        self.ged_results = []
+    
+    def compute_case(
+        self,
+        case_id: str,
+        preds_per_fold: Dict[int, np.ndarray],
+        gt: Optional[np.ndarray] = None,
+        affine: Optional[np.ndarray] = None,
+        case_output_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Compute GED for a case."""
+        num_classes = preds_per_fold[0].shape[0]
+        fold_indices = sorted(preds_per_fold.keys())
+        ensemble_preds = np.stack([np.argmax(preds_per_fold[f], axis=0) for f in fold_indices], axis=0)
+        ged = compute_ged(gt_raters=gt["raters"], ensemble_pred=ensemble_preds, num_classes=num_classes)
+
+        ged_row = {
+            "case_id": case_id,
+            **ged
+        }
+        self.ged_results.append(ged_row)
+        return { "case_id": case_id }
+    
+    def export_summaries(self) -> None:
+        """Export GED summaries."""
+        if not self.ged_results:
+            return
+        
+        self.ged_results.append({
+            "case_id": "mean",
+            **{k: float(np.mean([r[k] for r in self.ged_results])) for k in self.ged_results[0] if k != "case_id"},
+        })
+        ged_df = pd.DataFrame(self.ged_results)
+        ged_df.to_csv(os.path.join(self.output_dir, "ged.csv"), index=False)
+
+
 class ACEMeric(BaseMetric):
     """Compute Average Calibration Error."""
     
@@ -364,4 +404,5 @@ METRICS = {
     "consensus_segmentation": ConsensusSegmentationMetric,
     "ncc": NCCMetric,
     "ace": ACEMeric,
+    "ged": GEDMetric,
 }

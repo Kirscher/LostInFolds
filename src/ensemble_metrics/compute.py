@@ -10,13 +10,8 @@ import numpy as np
 from tqdm import tqdm
 
 from .metrics import METRICS
-from .utils import (
-    discover_folds,
-    discover_cases,
-    load_prediction,
-    load_ground_truth,
-    standardize_prediction,
-)
+from .utils import (discover_cases, discover_folds, load_ground_truth,
+                    load_prediction, standardize_prediction)
 
 
 def main():
@@ -62,7 +57,7 @@ def main():
     parser.add_argument(
         "--metrics",
         type=str,
-        default="predictive_entropy,mutual_information,expected_entropy,pairwise_dice,consensus_segmentation,ncc,ace",
+        default="predictive_entropy,mutual_information,expected_entropy,pairwise_dice,consensus_segmentation,ncc,ace,ged",
         help="Comma-separated list of metrics to compute"
     )
     parser.add_argument(

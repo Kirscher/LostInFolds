@@ -2,7 +2,8 @@
 import numpy as np
 
 from src.ensemble_metrics.metric_functions import (
-    calib_stats, get_correct_binary_multirater, get_max_prob_for_pred_classes)
+    calib_stats, get_correct_binary_multirater, get_max_prob_for_pred_classes,
+    get_repeated_interleave, get_repeated_stacked)
 
 
 def test_calib_stats():
@@ -55,7 +56,45 @@ def test_get_max_prob_for_pred_classes():
     assert np.allclose(max_probs, expected_max_probs, atol=1e-3), "Max probabilities for predicted classes do not match expected values."
 
 
+def test_get_repeat_interleave():
+    labels = np.random.randint(0, 5, size=(3, 64, 64, 12))
+    num_repeats = 4
+    repeated = get_repeated_interleave(labels, num_repeats)
+    expected_shape = (num_repeats * labels.shape[0],) + labels.shape[1:]
+    assert repeated.shape == expected_shape, "Repeated interleave shape does not match expected shape."
+
+    for i in range(labels.shape[0]):
+        pos_1 = i * num_repeats
+        for j in range(num_repeats):
+            pos_2 = pos_1 + j
+            if pos_1 == pos_2:
+                continue
+            assert np.array_equal(
+                repeated[pos_1],
+                repeated[pos_2]
+            ), "Repeated interleave values do not match expected values."
+
+
+def test_get_repeat_stacked():
+    labels = np.random.randint(0, 5, size=(3, 64, 64, 12))
+    num_repeats = 4
+    repeated = get_repeated_stacked(labels, num_repeats)
+    expected_shape = (num_repeats * labels.shape[0],) + labels.shape[1:]
+    assert repeated.shape == expected_shape, "Repeated stacked shape does not match expected shape."
+
+    for i in range(labels.shape[0]):
+        pos_1 = i
+        for j in range(1, num_repeats):
+            pos_2 = pos_1 + j * labels.shape[0]
+            assert np.array_equal(
+                repeated[pos_1],
+                repeated[pos_2]
+            ), "Repeated stacked values do not match expected values."
+
+
 if __name__ == "__main__":
     test_calib_stats()
     test_get_correct_binary_multirater()
     test_get_max_prob_for_pred_classes()
+    test_get_repeat_interleave()
+    test_get_repeat_stacked()

@@ -29,6 +29,7 @@ __all__ = [
     "ConsensusSegmentationMetric",
     "NCCMetric",
     "ACEMeric",
+    "GEDMetric",
     "METRICS",
     # Utility functions
     "discover_folds",

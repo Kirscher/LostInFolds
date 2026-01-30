@@ -93,6 +93,64 @@ def compute_ncc(gt_unc_map: np.array, pred_unc_map: np.array) -> float:
     return ncc
 
 
+def get_repeated_interleave(labels: np.ndarray, num_repeats: int) -> np.ndarray:
+    """Repeat the labels along the first axis in a "interleave" (from torch.repeat_interleaved) manner.
+    That is, given lables l1, l2, l3, they are repeated as l1, l1, ..., l2, l2, ..., l3, l3, ..."""
+    return np.repeat(labels, num_repeats, axis=0)
+
+
+def get_repeated_stacked(labels: np.ndarray, num_repeats: int) -> np.ndarray:
+    """Repeat the labels along the first axis in a "stacked" manner.
+    That is, given lables l1, l2, l3, they are repeated as l1, l2, l3, l1, l2, l3, ..."""
+    return np.tile(labels, (num_repeats, *((labels.ndim - 1) * [1])))
+
+
+def get_dist_dict_from_dice(dice_dict: Dict[str, float]) -> Dict[str, float]:
+    """Convert Dice scores to distance metrics."""
+    dist_dict = {}
+    for key, dice in dice_dict.items():
+        dist = 1.0 - dice
+        dist_dict[key] = dist
+    return dist_dict
+
+
+def compute_ged(gt_raters: np.array, ensemble_pred: np.array, num_classes: int, include_background:bool =False) -> Dict[str, float]:
+    """Compute Generalized Energy Distance (GED) metric."""
+    """
+    Input:
+        gt_raters: np.ndarray of shape (num_raters, H, W, (D))
+        ensemble_pred: np.ndarray of shape (num_folds, H, W, (D)) representing predicted segmentations from each fold
+    Output:
+        ged: Dict with GED per class and overall GED
+    """
+    gt_repeat_pred_interleave = get_repeated_interleave(labels=gt_raters, num_repeats=ensemble_pred.shape[0])
+    pred_repeat_gt_stacked = get_repeated_stacked(labels=ensemble_pred, num_repeats=gt_raters.shape[0])
+    dice_gt_pred = compute_dice(gt_repeat_pred_interleave, pred_repeat_gt_stacked, num_classes=num_classes, include_background=include_background)
+    dice_gt_pred["overall_dice"] = float(np.mean(list(dice_gt_pred.values())))
+    dist_gt_pred = get_dist_dict_from_dice(dice_gt_pred)
+
+    gt_repeat_gt_interleave = get_repeated_interleave(labels=gt_raters, num_repeats=gt_raters.shape[0])
+    gt_repeat_gt_stacked = get_repeated_stacked(labels=gt_raters, num_repeats=gt_raters.shape[0])
+    dice_gt_gt = compute_dice(gt_repeat_gt_interleave, gt_repeat_gt_stacked, num_classes=num_classes, include_background=include_background)
+    dice_gt_gt["overall_dice"] = float(np.mean(list(dice_gt_gt.values())))
+    dist_gt_gt = get_dist_dict_from_dice(dice_gt_gt)
+
+    pred_repeat_pred_interleave = get_repeated_interleave(labels=ensemble_pred, num_repeats=ensemble_pred.shape[0])
+    pred_repeat_pred_stacked = get_repeated_stacked(labels=ensemble_pred, num_repeats=ensemble_pred.shape[0])
+    dice_pred_pred = compute_dice(pred_repeat_pred_interleave, pred_repeat_pred_stacked, num_classes=num_classes, include_background=include_background)
+    dice_pred_pred["overall_dice"] = float(np.mean(list(dice_pred_pred.values())))
+    dist_pred_pred = get_dist_dict_from_dice(dice_pred_pred)
+
+    ged_dict = {}
+    class_range = range(num_classes) if include_background else range(1, num_classes)
+    for c in class_range:
+        ged = 2 * dist_gt_pred[f"class_{c}"] - dist_gt_gt[f"class_{c}"] - dist_pred_pred[f"class_{c}"]
+        ged_dict[f"class_{c}"] = ged
+    ged_dict["overall_ged"] = 2 * dist_gt_pred["overall_dice"] - dist_gt_gt["overall_dice"] - dist_pred_pred["overall_dice"]
+
+    return ged_dict
+
+
 def get_correct_binary_multirater(gt_raters: np.ndarray, pred: np.ndarray) -> np.ndarray:
     """Get binary correctness array for multiple raters."""
     """
