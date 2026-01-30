@@ -222,3 +222,50 @@ def calib_stats(correct, calib_confids, n_bins=20):
 def compute_ace(correct, calib_confids, n_bins=20):
     bin_discrepancies, _, num_nonzero = calib_stats(correct, calib_confids, n_bins=n_bins)
     return (1 / num_nonzero) * np.sum(bin_discrepancies)
+
+
+def rc_curve_stats(
+    risks: np.array, confids: np.array
+) -> tuple[list[float], list[float], list[float]]:
+    coverages = []
+    selective_risks = []
+    assert (
+        len(risks.shape) == 1 and len(confids.shape) == 1 and len(risks) == len(confids)
+    )
+
+    n_samples = len(risks)
+    idx_sorted = np.argsort(confids)
+
+    coverage = n_samples
+    error_sum = sum(risks[idx_sorted])
+
+    coverages.append(coverage / n_samples)
+    selective_risks.append(error_sum / n_samples)
+
+    weights = []
+
+    tmp_weight = 0
+    for i in range(0, len(idx_sorted) - 1):
+        coverage = coverage - 1
+        error_sum = error_sum - risks[idx_sorted[i]]
+        tmp_weight += 1
+        if i == 0 or confids[idx_sorted[i]] != confids[idx_sorted[i - 1]]:
+            coverages.append(coverage / n_samples)
+            selective_risks.append(error_sum / (n_samples - 1 - i))
+            weights.append(tmp_weight / n_samples)
+            tmp_weight = 0
+
+    # add a well-defined final point to the RC-curve.
+    if tmp_weight > 0:
+        coverages.append(0)
+        selective_risks.append(selective_risks[-1])
+        weights.append(tmp_weight / n_samples)
+
+    return coverages, selective_risks, weights
+
+
+def compute_aurc(risks: np.array, confids: np.array):
+    _, risks, weights = rc_curve_stats(risks, confids)
+    return sum(
+        [(risks[i] + risks[i + 1]) * 0.5 * weights[i] for i in range(len(weights))]
+    )

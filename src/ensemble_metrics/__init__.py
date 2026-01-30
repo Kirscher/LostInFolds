@@ -30,6 +30,7 @@ __all__ = [
     "NCCMetric",
     "ACEMeric",
     "GEDMetric",
+    "AURCMetric",
     "METRICS",
     # Utility functions
     "discover_folds",

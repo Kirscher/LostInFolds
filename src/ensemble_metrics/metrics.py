@@ -8,7 +8,7 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 
-from .metric_functions import (compute_ace, compute_dice,
+from .metric_functions import (compute_ace, compute_aurc, compute_dice,
                                compute_ensemble_entropy, compute_entropy_map,
                                compute_ged, compute_mutual_information_wrapper,
                                compute_ncc, get_correct_binary_multirater,
@@ -396,6 +396,76 @@ class ACEMeric(BaseMetric):
         df.to_csv(os.path.join(self.output_dir, "ace.csv"), index=False)
 
 
+class AURCMetric(BaseMetric):
+    """Compute Area Under the Risk-Coverage Curve (AURC) metric."""
+    def __init__(self, output_dir: str):
+        super().__init__(output_dir)
+        self.risks = []
+        self.confids = []
+        self.num_classes = None
+    
+    def compute_case(
+        self,
+        case_id: str,
+        preds_per_fold: Dict[int, np.ndarray],
+        gt: Optional[np.ndarray] = None,
+        affine: Optional[np.ndarray] = None,
+        case_output_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Compute risks and confids for a case. The final AURC is computed in export_summaries.
+        Assumes dice and pairwise dice to be available.
+        """
+        dice_per_case_path = os.path.join(self.output_dir, "dice_vs_gt_per_case.csv")
+        pairwise_dice_path = os.path.join(self.output_dir, "pairwise_dice_per_case.csv")
+        if not os.path.exists(dice_per_case_path):
+            raise FileNotFoundError(f"Dice per case file not found for case {case_id}")
+        if not os.path.exists(pairwise_dice_path):
+            raise FileNotFoundError(f"Pairwise Dice per case file not found for case {case_id}")
+        dice_df = pd.read_csv(dice_per_case_path)
+        pairwise_dice_df = pd.read_csv(pairwise_dice_path)
+        dice = dice_df[dice_df["case_id"] == case_id]
+        pairwise_dice = pairwise_dice_df[pairwise_dice_df["case_id"] == case_id]
+        pairwise_dice_mean = pairwise_dice.drop(["case_id", "fold_i", "fold_j"], axis=1).mean()
+        
+        self.num_classes = preds_per_fold[0].shape[0]
+        risk_dict = {}
+        confid_dict = {}
+        for c in range(1, self.num_classes):
+            dice_c = dice[f"consensus_class_{c}"].values[0]
+            pairwise_dice_c = pairwise_dice_mean[f"class_{c}"]
+            risk = 1.0 - dice_c
+            risk_dict[f"class_{c}"] = risk
+            confid_dict[f"class_{c}"] = pairwise_dice_c
+        risk_dict["overall_risk"] = 1.0 - dice["consensus_overall_dice"].values[0]
+        confid_dict["overall_confid"] = pairwise_dice_mean["overall_dice"]
+        
+        self.risks.append({
+            "case_id": case_id,
+            **risk_dict})
+        self.confids.append({
+            "case_id": case_id,
+            **confid_dict})
+
+        return { "case_id": case_id }
+    
+    def export_summaries(self) -> None:
+        """Export AURC summaries."""
+        if not self.risks or not self.confids:
+            return
+        aurc_dict = {}
+        for i in range(1, self.num_classes):
+            risks = np.array([r[f"class_{i}"] for r in self.risks])
+            confids = np.array([c[f"class_{i}"] for c in self.confids])
+            aurc_dict[f"class_{i}"] = compute_aurc(risks, confids)
+        overall_risks = np.array([r["overall_risk"] for r in self.risks])
+        overall_confids = np.array([c["overall_confid"] for c in self.confids])
+        aurc_dict["overall_aurc"] = compute_aurc(overall_risks, overall_confids)
+        
+        aurc_df = pd.DataFrame([aurc_dict])
+        aurc_df.to_csv(os.path.join(self.output_dir, "aurc.csv"), index=False)
+
+
 METRICS = {
     "predictive_entropy": PredictiveEntropyMetric,
     "mutual_information": MutualInformationMetric,
@@ -405,4 +475,5 @@ METRICS = {
     "ncc": NCCMetric,
     "ace": ACEMeric,
     "ged": GEDMetric,
+    "aurc": AURCMetric,
 }

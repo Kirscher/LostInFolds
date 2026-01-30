@@ -57,7 +57,7 @@ def main():
     parser.add_argument(
         "--metrics",
         type=str,
-        default="predictive_entropy,mutual_information,expected_entropy,pairwise_dice,consensus_segmentation,ncc,ace,ged",
+        default="predictive_entropy,mutual_information,expected_entropy,pairwise_dice,consensus_segmentation,ncc,ace,ged,aurc",
         help="Comma-separated list of metrics to compute"
     )
     parser.add_argument(
