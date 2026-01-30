@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Core metric computation functions for ensemble predictions."""
 
-from typing import Dict
+from typing import Dict, List, Optional, Tuple, Union
 
 import nibabel as nib
 import numpy as np
+from scipy.ndimage import distance_transform_edt
 from sklearn import preprocessing as sk_preprocess
 from sklearn import utils as sk_utils
 
@@ -222,6 +223,170 @@ def calib_stats(correct, calib_confids, n_bins=20):
 def compute_ace(correct, calib_confids, n_bins=20):
     bin_discrepancies, _, num_nonzero = calib_stats(correct, calib_confids, n_bins=n_bins)
     return (1 / num_nonzero) * np.sum(bin_discrepancies)
+
+
+# ------------------------------------------------------------
+# Boundary & distance utilities
+# ------------------------------------------------------------
+
+def find_boundary_mask(labels: np.ndarray) -> np.ndarray:
+    """
+    Returns boolean mask of boundary pixels.
+
+    A pixel is boundary if any neighbor has different label.
+    Works for 2D or ND arrays.
+    """
+    labels = np.asarray(labels)
+    boundary = np.zeros_like(labels, dtype=bool)
+
+    for axis in range(labels.ndim):
+        diff = np.diff(labels, axis=axis)
+        pad1 = [(0, 0)] * labels.ndim
+        pad2 = [(0, 0)] * labels.ndim
+
+        pad1[axis] = (1, 0)
+        pad2[axis] = (0, 1)
+
+        boundary |= np.pad(diff != 0, pad1)
+        boundary |= np.pad(diff != 0, pad2)
+
+    return boundary
+
+
+def unsigned_distance_to_boundary(labels: np.ndarray) -> np.ndarray:
+    """
+    Distance from each pixel to nearest ground-truth boundary.
+    """
+    boundary = find_boundary_mask(labels)
+    # distance_transform_edt computes distance to nearest zero
+    dist = distance_transform_edt(~boundary)
+    return dist
+
+
+def ring_band_masks(
+    dist: np.ndarray,
+    edges: List[float],
+) -> List[np.ndarray]:
+    """
+    Creates masks for distance rings:
+    [edges[i], edges[i+1])
+    """
+    bands = []
+    for i in range(len(edges) - 1):
+        lo = edges[i]
+        hi = edges[i + 1]
+        bands.append((dist >= lo) & (dist < hi))
+    return bands
+
+
+# ------------------------------------------------------------
+# BA-ECE
+# ------------------------------------------------------------
+
+def compute_ba_ece(
+    confidence: np.ndarray,
+    labels: np.ndarray,
+    pred_labels: np.ndarray,
+    edges: Union[List[float], Tuple[float, ...]] = (0, 3, 7, 15, np.inf),
+) -> Dict[str, object]:
+    """
+    Boundary-Aware Expected Calibration Error (BA-ECE)
+
+    Parameters
+    ----------
+    confidence :
+        Confidence of the prediction.
+    labels : (n_raters, ...)
+        Ground-truth labels. Contains multiple raters along first axis.
+    pred_labels : optional (...)
+        Predicted class labels.
+    edges : distance band edges.
+
+    Returns
+    -------
+    dict with:
+        ba_ece : float
+        bands : list of per-band dicts
+        counts : list of counts per band
+    """
+
+    # Distance to GT boundary
+    dist = []
+    bands = []
+    for rater_idx in range(labels.shape[0]):
+        dist_rater = unsigned_distance_to_boundary(labels[rater_idx])
+        bands_rater = ring_band_masks(dist_rater, list(edges))
+        dist.append(dist_rater)
+        bands.append(bands_rater)
+    dist = np.stack(dist, axis=0)
+    bands = np.stack(bands, axis=0)
+
+    confidence = confidence.reshape(-1)
+    y = labels.reshape(-1).astype(int)
+    pred = pred_labels.reshape(-1).astype(int)
+    dist_flat = dist.reshape(-1)
+
+    # Uncertainty = 1 - confidence
+    # confidence = P.max(axis=1)
+    uncertainty = 1.0 - confidence
+
+    error = (pred != y).astype(np.float32)
+
+    total_weight = 0.0
+    weighted_sum = 0.0
+
+    band_results = []
+    counts = []
+
+    for i, _ in enumerate(bands[1]):
+        mask = bands[:, i, ...]
+        sel = mask.reshape(-1)
+        cnt = int(sel.sum())
+        counts.append(cnt)
+
+        if cnt == 0:
+            band_results.append(
+                dict(
+                    band=i,
+                    count=0,
+                    mean_uncertainty=np.nan,
+                    mean_error=np.nan,
+                    calibration_error=np.nan,
+                    mean_distance=np.nan,
+                    weight=0.0,
+                )
+            )
+            continue
+
+        mean_unc = float(uncertainty[sel].mean())
+        mean_err = float(error[sel].mean())
+        cal_err = abs(mean_unc - mean_err)
+        mean_dist = float(dist_flat[sel].mean())
+
+        weight = 1.0 / (mean_dist + 1.0)
+
+        total_weight += weight
+        weighted_sum += weight * cal_err
+
+        band_results.append(
+            dict(
+                band=i,
+                count=cnt,
+                mean_uncertainty=mean_unc,
+                mean_error=mean_err,
+                calibration_error=cal_err,
+                mean_distance=mean_dist,
+                weight=weight,
+            )
+        )
+
+    ba = float(weighted_sum / max(total_weight, 1e-12))
+
+    return {
+        "ba_ece": ba,
+        "bands": band_results,
+        "counts": counts,
+    }
 
 
 def rc_curve_stats(

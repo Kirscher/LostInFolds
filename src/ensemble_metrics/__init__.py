@@ -31,6 +31,7 @@ __all__ = [
     "ACEMeric",
     "GEDMetric",
     "AURCMetric",
+    "BAECEMetric",
     "METRICS",
     # Utility functions
     "discover_folds",

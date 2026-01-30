@@ -8,10 +8,11 @@ import nibabel as nib
 import numpy as np
 import pandas as pd
 
-from .metric_functions import (compute_ace, compute_aurc, compute_dice,
-                               compute_ensemble_entropy, compute_entropy_map,
-                               compute_ged, compute_mutual_information_wrapper,
-                               compute_ncc, get_correct_binary_multirater,
+from .metric_functions import (compute_ace, compute_aurc, compute_ba_ece,
+                               compute_dice, compute_ensemble_entropy,
+                               compute_entropy_map, compute_ged,
+                               compute_mutual_information_wrapper, compute_ncc,
+                               get_correct_binary_multirater,
                                get_max_prob_for_pred_classes)
 
 
@@ -396,6 +397,52 @@ class ACEMeric(BaseMetric):
         df.to_csv(os.path.join(self.output_dir, "ace.csv"), index=False)
 
 
+class BAECEMetric(BaseMetric):
+    """Compute Boundary Aware Calibration Error."""
+    
+    def __init__(self, output_dir: str):
+        super().__init__(output_dir)
+        self.baece_results = []
+
+    def compute_case(
+            self,
+            case_id: str,
+            preds_per_fold: Dict[int, np.ndarray],
+            gt: Optional[np.ndarray] = None,
+            affine: Optional[np.ndarray] = None,
+            case_output_dir: Optional[str] = None
+        ) -> Dict[str, Any]:
+        """Compute BAECE for a case. Requires consensus prediction to be calculated first."""
+        conensus_pred_path = os.path.join(case_output_dir, "consensus_seg.nii.gz")
+        if not os.path.exists(conensus_pred_path):
+            raise FileNotFoundError(f"Consensus segmentation not found for case {case_id}")
+        consensus_pred = nib.load(conensus_pred_path).get_fdata()
+        conf = get_max_prob_for_pred_classes(probs_per_fold=preds_per_fold, consensus_pred=consensus_pred)
+        conf = np.repeat(conf[np.newaxis, ...], gt["raters"].shape[0], axis=0)
+        consensus_pred = np.repeat(consensus_pred[np.newaxis, ...], gt["raters"].shape[0], axis=0)
+        ba_ece = compute_ba_ece(confidence=conf, labels=gt["raters"], pred_labels=consensus_pred)
+        self.baece_results.append({
+            "case_id": case_id,
+            **ba_ece
+        })
+        return {"case_id": case_id}
+    
+    def export_summaries(self) -> None:
+        """Export BACE summaries."""
+        if not self.baece_results:
+            return
+        baece_results_summary = [{
+            "case_id": r["case_id"],
+            "ba_ece": r["ba_ece"]
+        } for r in self.baece_results]
+        baece_results_summary.append({
+            "case_id": "mean",
+            "ba_ece": float(np.mean([r["ba_ece"] for r in self.baece_results])),
+        })
+        df = pd.DataFrame(baece_results_summary)
+        df.to_csv(os.path.join(self.output_dir, "ba_ece.csv"), index=False)
+
+
 class AURCMetric(BaseMetric):
     """Compute Area Under the Risk-Coverage Curve (AURC) metric."""
     def __init__(self, output_dir: str):
@@ -474,6 +521,7 @@ METRICS = {
     "consensus_segmentation": ConsensusSegmentationMetric,
     "ncc": NCCMetric,
     "ace": ACEMeric,
+    "ba_ece": BAECEMetric,
     "ged": GEDMetric,
     "aurc": AURCMetric,
 }
