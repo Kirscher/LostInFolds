@@ -6,9 +6,11 @@ from .metric_functions import (compute_dice, compute_ensemble_entropy,
                                compute_entropy_map,
                                compute_mutual_information_wrapper, load_array)
 # Metric classes
-from .metrics import (METRICS, BaseMetric, ConsensusSegmentationMetric,
-                      ExpectedEntropyMetric, MutualInformationMetric,
-                      PairwiseDiceMetric)
+from .metrics import (ACEMeric, AURCMetric, BAECEMetric, BaseMetric,
+                      ConsensusSegmentationMetric, ExpectedEntropyMetric,
+                      GEDMetric, METRICS, MutualInformationMetric,
+                      NCCMetric, PairwiseDiceMetric,
+                      PredictiveEntropyMetric)
 # Utility functions
 from .utils import (discover_cases, discover_folds, load_ground_truth,
                     load_prediction, one_hot_encode, standardize_prediction)
