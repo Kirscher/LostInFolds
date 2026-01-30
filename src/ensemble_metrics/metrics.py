@@ -174,6 +174,10 @@ class PairwiseDiceMetric(BaseMetric):
                     "overall_dice": overall_dice,
                     **dice_scores
                 })
+        pairwise_dice_df = pd.DataFrame(pairwise_dice)
+        pairwise_dice_df.to_csv(
+            os.path.join(case_output_dir, "pairwise_dice.csv"), index=False
+        )
         
         self.pairwise_results.extend(pairwise_dice)
         return {"case_id": case_id}
@@ -250,6 +254,10 @@ class ConsensusSegmentationMetric(BaseMetric):
                 for k, v in fold_dice.items():
                     gt_comparison_row[f"{fold_name}_{k}"] = float(v)
             
+            gt_comparison_df = pd.DataFrame([gt_comparison_row])
+            gt_comparison_df.to_csv(
+                os.path.join(case_output_dir, "dice_vs_gt.csv"), index=False
+            )
             self.gt_comparison_results.append(gt_comparison_row)
         
         return {"case_id": case_id}
@@ -463,8 +471,8 @@ class AURCMetric(BaseMetric):
         Compute risks and confids for a case. The final AURC is computed in export_summaries.
         Assumes dice and pairwise dice to be available.
         """
-        dice_per_case_path = os.path.join(self.output_dir, "dice_vs_gt_per_case.csv")
-        pairwise_dice_path = os.path.join(self.output_dir, "pairwise_dice_per_case.csv")
+        dice_per_case_path = os.path.join(case_output_dir, "dice_vs_gt.csv")
+        pairwise_dice_path = os.path.join(case_output_dir, "pairwise_dice.csv")
         if not os.path.exists(dice_per_case_path):
             raise FileNotFoundError(f"Dice per case file not found for case {case_id}")
         if not os.path.exists(pairwise_dice_path):
