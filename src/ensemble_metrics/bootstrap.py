@@ -75,6 +75,12 @@ def bootstrap_statistic(
     if n < 2:
         raise ValueError(f"Need at least 2 samples for bootstrap, got {n}")
     
+    if n_bootstrap < 2:
+        raise ValueError(f"n_bootstrap must be at least 2, got {n_bootstrap}")
+    
+    if not (0 < ci_level < 1):
+        raise ValueError(f"ci_level must be between 0 and 1 (exclusive), got {ci_level}")
+    
     # Point estimate
     point_estimate = statistic_func(data)
     
