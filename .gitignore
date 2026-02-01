@@ -209,3 +209,9 @@ __marimo__/
 .python-version
 .vscode
 Scripts/
+# Demo/test generated data
+test_demo_data/
+metrics_visualizations/
+comparison_results.csv
+visualize_metrics.py
+tests/test_ensemble_metrics_integration.py
