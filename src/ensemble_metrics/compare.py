@@ -5,8 +5,6 @@ import argparse
 import os
 import sys
 
-import pandas as pd
-
 from .bootstrap import (
     compare_methods,
     format_comparison_table,
@@ -41,7 +39,7 @@ Examples:
 
 Statistical Tests Performed:
   - Paired bootstrap test for mean difference
-  - 95% BCa confidence interval for the difference
+  - 95% percentile confidence interval for the difference
   - Cohen's d effect size (paired samples)
   - Two-sided p-value from bootstrap distribution
 

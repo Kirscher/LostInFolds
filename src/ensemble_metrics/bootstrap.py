@@ -66,8 +66,8 @@ def bootstrap_statistic(
     BootstrapResult
         Container with point estimate, CI bounds, and metadata
     """
-    if random_state is not None:
-        np.random.seed(random_state)
+    # Use local RNG for thread safety and reproducibility
+    rng = np.random.default_rng(random_state)
     
     data = np.asarray(data)
     n = len(data)
@@ -81,7 +81,7 @@ def bootstrap_statistic(
     # Bootstrap resampling
     bootstrap_stats = np.zeros(n_bootstrap)
     for i in range(n_bootstrap):
-        resample_idx = np.random.randint(0, n, size=n)
+        resample_idx = rng.integers(0, n, size=n)
         resample = data[resample_idx]
         bootstrap_stats[i] = statistic_func(resample)
     
@@ -189,7 +189,7 @@ def _bca_interval(
         numerator = z0 + z_alpha
         denominator = 1 - a * (z0 + z_alpha)
         if np.abs(denominator) < 1e-10:
-            return z_alpha  # Fall back to unadjusted
+            return stats.norm.cdf(z_alpha)  # Fall back to unadjusted percentile
         adjusted_z = z0 + numerator / denominator
         return stats.norm.cdf(adjusted_z)
     
@@ -226,7 +226,9 @@ def load_metric_csv(filepath: str) -> Tuple[pd.DataFrame, str]:
     metric_name = [col for col in df.columns if col != "case_id"][0]
     
     # Filter out summary rows (mean, std, etc.)
+    # Convert case_id to string to handle numeric or mixed types
     summary_keywords = ["mean", "std", "median", "min", "max", "sum", "count"]
+    df["case_id"] = df["case_id"].fillna("").astype(str)
     mask = ~df["case_id"].str.lower().isin(summary_keywords)
     df_cases = df[mask].copy()
     
@@ -490,8 +492,8 @@ def paired_bootstrap_test(
     Tuple[float, float, float, float]
         (difference, ci_lower, ci_upper, p_value)
     """
-    if random_state is not None:
-        np.random.seed(random_state)
+    # Use local RNG for thread safety and reproducibility
+    rng = np.random.default_rng(random_state)
     
     data_a = np.asarray(data_a)
     data_b = np.asarray(data_b)
@@ -508,7 +510,7 @@ def paired_bootstrap_test(
     # Bootstrap the differences
     bootstrap_diffs = np.zeros(n_bootstrap)
     for i in range(n_bootstrap):
-        resample_idx = np.random.randint(0, n, size=n)
+        resample_idx = rng.integers(0, n, size=n)
         bootstrap_diffs[i] = np.mean(differences[resample_idx])
     
     # Confidence interval
