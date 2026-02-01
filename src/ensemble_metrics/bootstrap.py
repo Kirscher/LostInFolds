@@ -437,6 +437,328 @@ def format_results_table(
         return pivot_df.to_string()
 
 
+@dataclass
+class ComparisonResult:
+    """Container for method comparison results."""
+    metric_name: str
+    method_a_name: str
+    method_b_name: str
+    mean_a: float
+    mean_b: float
+    difference: float  # B - A
+    ci_lower: float
+    ci_upper: float
+    ci_level: float
+    p_value: float
+    effect_size: float  # Cohen's d
+    n_samples: int
+    n_bootstrap: int
+    significant: bool
+
+
+def paired_bootstrap_test(
+    data_a: np.ndarray,
+    data_b: np.ndarray,
+    n_bootstrap: int = 10000,
+    ci_level: float = 0.95,
+    random_state: Optional[int] = None,
+    alternative: str = "two-sided"
+) -> Tuple[float, float, float, float]:
+    """
+    Perform paired bootstrap test comparing two methods.
+    
+    Uses bootstrap resampling on paired differences to compute
+    confidence interval and p-value for the difference.
+    
+    Parameters
+    ----------
+    data_a : np.ndarray
+        Metric values for method A (per case)
+    data_b : np.ndarray
+        Metric values for method B (per case)
+    n_bootstrap : int
+        Number of bootstrap iterations
+    ci_level : float
+        Confidence level for CI
+    random_state : int, optional
+        Random seed
+    alternative : str
+        'two-sided', 'greater' (B > A), or 'less' (B < A)
+        
+    Returns
+    -------
+    Tuple[float, float, float, float]
+        (difference, ci_lower, ci_upper, p_value)
+    """
+    if random_state is not None:
+        np.random.seed(random_state)
+    
+    data_a = np.asarray(data_a)
+    data_b = np.asarray(data_b)
+    
+    if len(data_a) != len(data_b):
+        raise ValueError(f"Arrays must have same length: {len(data_a)} vs {len(data_b)}")
+    
+    n = len(data_a)
+    
+    # Compute paired differences
+    differences = data_b - data_a
+    observed_diff = np.mean(differences)
+    
+    # Bootstrap the differences
+    bootstrap_diffs = np.zeros(n_bootstrap)
+    for i in range(n_bootstrap):
+        resample_idx = np.random.randint(0, n, size=n)
+        bootstrap_diffs[i] = np.mean(differences[resample_idx])
+    
+    # Confidence interval
+    alpha = 1 - ci_level
+    ci_lower = np.percentile(bootstrap_diffs, 100 * alpha / 2)
+    ci_upper = np.percentile(bootstrap_diffs, 100 * (1 - alpha / 2))
+    
+    # P-value: proportion of bootstrap samples on wrong side of zero
+    # Using the shifted bootstrap distribution (null hypothesis: no difference)
+    shifted_diffs = bootstrap_diffs - observed_diff
+    
+    if alternative == "two-sided":
+        p_value = np.mean(np.abs(shifted_diffs) >= np.abs(observed_diff)) 
+    elif alternative == "greater":  # H1: B > A (diff > 0)
+        p_value = np.mean(shifted_diffs >= observed_diff)
+    elif alternative == "less":  # H1: B < A (diff < 0)
+        p_value = np.mean(shifted_diffs <= observed_diff)
+    else:
+        raise ValueError(f"Unknown alternative: {alternative}")
+    
+    # Ensure p-value is at least 1/n_bootstrap (can't be exactly 0)
+    p_value = max(p_value, 1.0 / n_bootstrap)
+    
+    return observed_diff, ci_lower, ci_upper, p_value
+
+
+def cohens_d(data_a: np.ndarray, data_b: np.ndarray) -> float:
+    """
+    Compute Cohen's d effect size for paired samples.
+    
+    Uses the standard deviation of the differences as the denominator
+    (appropriate for paired/repeated measures).
+    
+    Parameters
+    ----------
+    data_a, data_b : np.ndarray
+        Paired metric values
+        
+    Returns
+    -------
+    float
+        Cohen's d effect size
+    """
+    differences = np.asarray(data_b) - np.asarray(data_a)
+    d = np.mean(differences) / (np.std(differences, ddof=1) + 1e-10)
+    return d
+
+
+def compare_methods(
+    metrics_dir_a: str,
+    metrics_dir_b: str,
+    method_a_name: str = "Method A",
+    method_b_name: str = "Method B",
+    n_bootstrap: int = 10000,
+    ci_level: float = 0.95,
+    random_state: Optional[int] = None,
+    metric_pattern: str = "*.csv"
+) -> pd.DataFrame:
+    """
+    Compare metrics between two methods using paired bootstrap tests.
+    
+    Parameters
+    ----------
+    metrics_dir_a : str
+        Directory with metrics from method A
+    metrics_dir_b : str
+        Directory with metrics from method B
+    method_a_name : str
+        Display name for method A
+    method_b_name : str
+        Display name for method B
+    n_bootstrap : int
+        Number of bootstrap iterations
+    ci_level : float
+        Confidence level
+    random_state : int, optional
+        Random seed
+    metric_pattern : str
+        Glob pattern for metric files
+        
+    Returns
+    -------
+    pd.DataFrame
+        Comparison results for all metrics
+    """
+    # Find matching metric files
+    files_a = {os.path.basename(f): f for f in glob.glob(os.path.join(metrics_dir_a, metric_pattern))}
+    files_b = {os.path.basename(f): f for f in glob.glob(os.path.join(metrics_dir_b, metric_pattern))}
+    
+    # Filter out bootstrap results
+    files_a = {k: v for k, v in files_a.items() if not k.startswith("bootstrap_")}
+    files_b = {k: v for k, v in files_b.items() if not k.startswith("bootstrap_")}
+    
+    common_files = set(files_a.keys()) & set(files_b.keys())
+    
+    if not common_files:
+        raise ValueError(f"No common metric files found between {metrics_dir_a} and {metrics_dir_b}")
+    
+    results = []
+    
+    for filename in sorted(common_files):
+        try:
+            df_a, metric_name = load_metric_csv(files_a[filename])
+            df_b, _ = load_metric_csv(files_b[filename])
+            
+            # Merge on case_id to ensure alignment
+            merged = pd.merge(df_a, df_b, on="case_id", suffixes=("_a", "_b"))
+            
+            if len(merged) < 2:
+                print(f"Warning: Insufficient matched cases for {filename}, skipping")
+                continue
+            
+            col_a = f"{metric_name}_a"
+            col_b = f"{metric_name}_b"
+            
+            values_a = merged[col_a].values
+            values_b = merged[col_b].values
+            
+            # Perform paired bootstrap test
+            diff, ci_lower, ci_upper, p_value = paired_bootstrap_test(
+                values_a, values_b,
+                n_bootstrap=n_bootstrap,
+                ci_level=ci_level,
+                random_state=random_state
+            )
+            
+            # Compute effect size
+            effect = cohens_d(values_a, values_b)
+            
+            # Determine significance
+            significant = (ci_lower > 0) or (ci_upper < 0)
+            
+            results.append(ComparisonResult(
+                metric_name=metric_name,
+                method_a_name=method_a_name,
+                method_b_name=method_b_name,
+                mean_a=np.mean(values_a),
+                mean_b=np.mean(values_b),
+                difference=diff,
+                ci_lower=ci_lower,
+                ci_upper=ci_upper,
+                ci_level=ci_level,
+                p_value=p_value,
+                effect_size=effect,
+                n_samples=len(merged),
+                n_bootstrap=n_bootstrap,
+                significant=significant
+            ))
+            
+        except Exception as e:
+            print(f"Warning: Failed to compare {filename}: {e}")
+            continue
+    
+    # Convert to DataFrame
+    df = pd.DataFrame([
+        {
+            "metric": r.metric_name,
+            f"mean_{r.method_a_name}": r.mean_a,
+            f"mean_{r.method_b_name}": r.mean_b,
+            "difference": r.difference,
+            f"ci_{int(r.ci_level*100)}_lower": r.ci_lower,
+            f"ci_{int(r.ci_level*100)}_upper": r.ci_upper,
+            "p_value": r.p_value,
+            "effect_size_d": r.effect_size,
+            "significant": r.significant,
+            "n_samples": r.n_samples,
+        }
+        for r in results
+    ])
+    
+    return df
+
+
+def format_comparison_table(
+    df: pd.DataFrame,
+    format_style: str = "markdown",
+    decimal_places: int = 4
+) -> str:
+    """
+    Format comparison results as a readable table.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Comparison results
+    format_style : str
+        'markdown', 'latex', or 'plain'
+    decimal_places : int
+        Decimal places for numeric values
+        
+    Returns
+    -------
+    str
+        Formatted table
+    """
+    df_fmt = df.copy()
+    
+    # Format difference with CI
+    ci_cols = [c for c in df.columns if c.startswith("ci_") and c.endswith("_lower")]
+    if ci_cols:
+        ci_prefix = ci_cols[0].replace("_lower", "")
+        lower_col = f"{ci_prefix}_lower"
+        upper_col = f"{ci_prefix}_upper"
+        
+        df_fmt["diff_with_ci"] = df_fmt.apply(
+            lambda row: f"{row['difference']:.{decimal_places}f} [{row[lower_col]:.{decimal_places}f}, {row[upper_col]:.{decimal_places}f}]",
+            axis=1
+        )
+    
+    # Format p-value
+    df_fmt["p_value_fmt"] = df_fmt["p_value"].apply(
+        lambda p: f"{p:.4f}" if p >= 0.0001 else f"{p:.2e}"
+    )
+    
+    # Add significance stars
+    df_fmt["sig"] = df_fmt["p_value"].apply(
+        lambda p: "***" if p < 0.001 else ("**" if p < 0.01 else ("*" if p < 0.05 else ""))
+    )
+    
+    # Format effect size with interpretation
+    def interpret_effect(d):
+        d_abs = abs(d)
+        if d_abs < 0.2:
+            return f"{d:.3f} (negligible)"
+        elif d_abs < 0.5:
+            return f"{d:.3f} (small)"
+        elif d_abs < 0.8:
+            return f"{d:.3f} (medium)"
+        else:
+            return f"{d:.3f} (large)"
+    
+    df_fmt["effect_interp"] = df_fmt["effect_size_d"].apply(interpret_effect)
+    
+    # Select columns for display
+    display_cols = ["metric"]
+    mean_cols = [c for c in df.columns if c.startswith("mean_")]
+    display_cols.extend(mean_cols)
+    display_cols.extend(["diff_with_ci", "p_value_fmt", "sig", "effect_interp"])
+    
+    df_display = df_fmt[display_cols].copy()
+    df_display.columns = [c.replace("_fmt", "").replace("_interp", "") for c in display_cols]
+    
+    if format_style == "markdown":
+        return df_display.to_markdown(index=False)
+    elif format_style == "latex":
+        return df_display.to_latex(index=False)
+    else:
+        return df_display.to_string(index=False)
+
+
 def main():
     """CLI entry point for bootstrap analysis."""
     parser = argparse.ArgumentParser(

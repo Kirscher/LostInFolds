@@ -17,7 +17,9 @@ from .utils import (discover_cases, discover_folds, load_ground_truth,
 # Bootstrap functions
 from .bootstrap import (BootstrapResult, bootstrap_statistic,
                         bootstrap_metric_file, bootstrap_metrics_directory,
-                        load_metric_csv, format_results_table)
+                        load_metric_csv, format_results_table,
+                        ComparisonResult, compare_methods, paired_bootstrap_test,
+                        cohens_d, format_comparison_table)
 
 __all__ = [
     # Metric functions
@@ -53,6 +55,12 @@ __all__ = [
     "bootstrap_metrics_directory",
     "load_metric_csv",
     "format_results_table",
+    # Comparison functions
+    "ComparisonResult",
+    "compare_methods",
+    "paired_bootstrap_test",
+    "cohens_d",
+    "format_comparison_table",
 ]
 
 __version__ = "0.1.0"
