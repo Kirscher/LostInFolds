@@ -775,16 +775,16 @@ def main():
         epilog="""
 Examples:
   # Bootstrap all metrics in a directory
-  python -m ensemble_metrics.bootstrap --metrics-dir ./metrics_all --output bootstrap_results.csv
+  python -m src.ensemble_metrics.bootstrap --metrics-dir ./metrics_all --output bootstrap_results.csv
   
   # Use specific confidence level and method
-  python -m ensemble_metrics.bootstrap --metrics-dir ./metrics_all --ci-level 0.99 --method bca
+  python -m src.ensemble_metrics.bootstrap --metrics-dir ./metrics_all --ci-level 0.99 --method bca
   
   # Compute specific statistics
-  python -m ensemble_metrics.bootstrap --metrics-dir ./metrics_all --statistics mean,median,iqr
+  python -m src.ensemble_metrics.bootstrap --metrics-dir ./metrics_all --statistics mean,median,iqr
   
   # Single file analysis
-  python -m ensemble_metrics.bootstrap --metric-file ./metrics_all/ace.csv --output ace_bootstrap.csv
+  python -m src.ensemble_metrics.bootstrap --metric-file ./metrics_all/ace.csv --output ace_bootstrap.csv
 """
     )
     
