@@ -307,6 +307,92 @@ def bootstrap_metric_file(
     return results
 
 
+def bootstrap_aurc_file(
+    filepath: str,
+    n_bootstrap: int = 10000,
+    ci_level: float = 0.95,
+    method: str = "bca",
+    random_state: Optional[int] = None
+) -> List[BootstrapResult]:
+    """
+    Bootstrap AURC by resampling cases and recomputing the global metric.
+
+    The file must be an ``aurc_per_case.csv`` containing per-case risk and
+    confidence columns (produced by ``AURCMetric.export_summaries``).
+
+    Parameters
+    ----------
+    filepath : str
+        Path to ``aurc_per_case.csv``.
+    n_bootstrap : int
+        Number of bootstrap resamples.
+    ci_level : float
+        Confidence level.
+    method : str
+        Bootstrap CI method ('bca', 'percentile', 'basic').
+    random_state : int, optional
+        Random seed.
+
+    Returns
+    -------
+    List[BootstrapResult]
+        One result per AURC column (per-class + overall).
+    """
+    from .metric_functions import compute_aurc as _compute_aurc
+
+    df = pd.read_csv(filepath)
+    # Detect risk/confid column pairs
+    risk_cols = [c for c in df.columns if c.startswith("risk_")]
+    confid_cols = [c for c in df.columns if c.startswith("confid_")]
+
+    # Build matched pairs: risk_class_1 <-> confid_class_1, risk_overall_risk <-> confid_overall_confid
+    pairs = []
+    for rc in risk_cols:
+        suffix = rc.replace("risk_", "", 1)  # e.g. "class_1" or "overall_risk"
+        # Try to find matching confid column
+        if suffix == "overall_risk":
+            cc = "confid_overall_confid"
+            label = "overall_aurc"
+        else:
+            cc = f"confid_{suffix}"
+            label = f"{suffix}"
+        if cc in confid_cols:
+            pairs.append((rc, cc, label))
+
+    if not pairs:
+        raise ValueError(f"No risk/confid column pairs found in {filepath}")
+
+    results = []
+    for risk_col, confid_col, aurc_label in pairs:
+        risks_all = df[risk_col].values
+        confids_all = df[confid_col].values
+        n = len(risks_all)
+
+        def _aurc_from_indices(idx):
+            return _compute_aurc(risks_all[idx], confids_all[idx])
+
+        # Wrap as a statistic over an index array
+        index_array = np.arange(n)
+
+        def statistic_func(data, _rc=risk_col, _cc=confid_col):
+            idx = data.astype(int)
+            return _compute_aurc(risks_all[idx], confids_all[idx])
+
+        result = bootstrap_statistic(
+            index_array,
+            statistic_func=statistic_func,
+            n_bootstrap=n_bootstrap,
+            ci_level=ci_level,
+            method=method,
+            random_state=random_state
+        )
+        result.metric_name = f"aurc_{aurc_label}"
+        result.statistic = "global"
+        results.append(result)
+
+    return results
+
+
 def bootstrap_metrics_directory(
     metrics_dir: str,
     output_file: Optional[str] = None,
@@ -354,7 +440,21 @@ def bootstrap_metrics_directory(
     
     all_results = []
     
-    for filepath in sorted(csv_files):
+    # Separate global-metric files that need special resampling
+    aurc_per_case_file = None
+    regular_files = []
+    for f in csv_files:
+        bname = os.path.basename(f)
+        if bname == "aurc_per_case.csv":
+            aurc_per_case_file = f
+        elif bname == "aurc.csv":
+            # Skip the single-row AURC summary; we bootstrap from per-case data
+            continue
+        else:
+            regular_files.append(f)
+    
+    # Bootstrap regular per-case metric files
+    for filepath in sorted(regular_files):
         try:
             results = bootstrap_metric_file(
                 filepath,
@@ -368,6 +468,21 @@ def bootstrap_metrics_directory(
         except Exception as e:
             print(f"Warning: Failed to process {filepath}: {e}")
             continue
+    
+    # Bootstrap global AURC metric by resampling cases
+    if aurc_per_case_file is not None:
+        try:
+            aurc_results = bootstrap_aurc_file(
+                aurc_per_case_file,
+                n_bootstrap=n_bootstrap,
+                ci_level=ci_level,
+                method=method,
+                random_state=random_state
+            )
+            all_results.extend(aurc_results)
+        except Exception as e:
+            print(f"Warning: Failed to bootstrap AURC from {aurc_per_case_file}: {e}")
+    
     
     # Convert to DataFrame
     df = pd.DataFrame([
@@ -565,6 +680,91 @@ def cohens_d(data_a: np.ndarray, data_b: np.ndarray) -> float:
     return d
 
 
+def _compare_aurc_per_case(
+    filepath_a: str,
+    filepath_b: str,
+    method_a_name: str = "Method A",
+    method_b_name: str = "Method B",
+    n_bootstrap: int = 10000,
+    ci_level: float = 0.95,
+    random_state: Optional[int] = None,
+) -> List[ComparisonResult]:
+    """
+    Paired bootstrap comparison of AURC between two methods.
+
+    Resamples cases (rows) with replacement, recomputes AURC for each
+    method on the resample, and tests the difference.
+    """
+    from .metric_functions import compute_aurc as _compute_aurc
+
+    df_a = pd.read_csv(filepath_a)
+    df_b = pd.read_csv(filepath_b)
+    merged = pd.merge(df_a, df_b, on="case_id", suffixes=("_a", "_b"))
+    n = len(merged)
+    if n < 2:
+        raise ValueError("Insufficient matched cases for AURC comparison")
+
+    risk_cols_a = sorted([c for c in merged.columns if c.startswith("risk_") and c.endswith("_a")])
+    results = []
+
+    for rc_a in risk_cols_a:
+        suffix = rc_a.replace("risk_", "").replace("_a", "")
+        if suffix == "overall_risk":
+            cc_a, rc_b, cc_b = "confid_overall_confid_a", "risk_overall_risk_b", "confid_overall_confid_b"
+            label = "aurc_overall"
+        else:
+            cc_a = f"confid_{suffix}_a"
+            rc_b = f"risk_{suffix}_b"
+            cc_b = f"confid_{suffix}_b"
+            label = f"aurc_{suffix}"
+        if not all(c in merged.columns for c in [cc_a, rc_b, cc_b]):
+            continue
+
+        ra = merged[rc_a].values
+        ca = merged[cc_a].values
+        rb = merged[rc_b].values
+        cb = merged[cc_b].values
+
+        aurc_a_point = _compute_aurc(ra, ca)
+        aurc_b_point = _compute_aurc(rb, cb)
+        observed_diff = aurc_b_point - aurc_a_point
+
+        rng = np.random.default_rng(random_state)
+        boot_diffs = np.zeros(n_bootstrap)
+        for i in range(n_bootstrap):
+            idx = rng.integers(0, n, size=n)
+            boot_diffs[i] = _compute_aurc(rb[idx], cb[idx]) - _compute_aurc(ra[idx], ca[idx])
+
+        alpha = 1 - ci_level
+        ci_lower = np.percentile(boot_diffs, 100 * alpha / 2)
+        ci_upper = np.percentile(boot_diffs, 100 * (1 - alpha / 2))
+        shifted = boot_diffs - np.mean(boot_diffs)
+        p_value = max(np.mean(np.abs(shifted) >= np.abs(observed_diff)), 1.0 / n_bootstrap)
+        significant = (ci_lower > 0) or (ci_upper < 0)
+        # Cohen's d on per-case risk differences as proxy
+        per_case_diff = rb - ra
+        effect = float(np.mean(per_case_diff) / (np.std(per_case_diff, ddof=1) + 1e-10))
+
+        results.append(ComparisonResult(
+            metric_name=label,
+            method_a_name=method_a_name,
+            method_b_name=method_b_name,
+            mean_a=aurc_a_point,
+            mean_b=aurc_b_point,
+            difference=observed_diff,
+            ci_lower=ci_lower,
+            ci_upper=ci_upper,
+            ci_level=ci_level,
+            p_value=p_value,
+            effect_size=effect,
+            n_samples=n,
+            n_bootstrap=n_bootstrap,
+            significant=significant,
+        ))
+
+    return results
+
+
 def compare_methods(
     metrics_dir_a: str,
     metrics_dir_b: str,
@@ -618,6 +818,25 @@ def compare_methods(
     results = []
     
     for filename in sorted(common_files):
+        # Skip single-row AURC summary; we compare via aurc_per_case.csv
+        if filename == "aurc.csv":
+            continue
+        
+        # Handle global AURC comparison via per-case resampling
+        if filename == "aurc_per_case.csv":
+            try:
+                results.extend(_compare_aurc_per_case(
+                    files_a[filename], files_b[filename],
+                    method_a_name=method_a_name,
+                    method_b_name=method_b_name,
+                    n_bootstrap=n_bootstrap,
+                    ci_level=ci_level,
+                    random_state=random_state,
+                ))
+            except Exception as e:
+                print(f"Warning: Failed to compare AURC: {e}")
+            continue
+        
         try:
             df_a, metric_name = load_metric_csv(files_a[filename])
             df_b, _ = load_metric_csv(files_b[filename])

@@ -94,16 +94,57 @@ def load_prediction(fold_path: str, case_id: str) -> Tuple[np.ndarray, Optional[
 
 
 def calculate_majority_consensus(raters: List[np.ndarray]) -> np.ndarray:
-    """Calculate majority consensus segmentation from multiple raters."""
-    raters_flattened = [rater.ravel() for rater in raters]
-    raters_stacked = np.stack(raters_flattened, axis=0)
-    majority_flat = np.apply_along_axis(
-        lambda x: np.bincount(x).argmax(),
-        axis=0,
-        arr=raters_stacked
-    )
-    majority_consensus = majority_flat.reshape(raters[0].shape)
-    return majority_consensus
+    """Calculate majority consensus segmentation from multiple raters.
+
+    Uses per-class vote counting instead of np.apply_along_axis for
+    O(num_classes) memory instead of O(num_raters * volume).
+    """
+    num_classes = max(int(r.max()) for r in raters) + 1
+    # Vote counting: for each class, count how many raters agree
+    best_count = np.zeros(raters[0].shape, dtype=np.uint8)
+    winner = np.zeros(raters[0].shape, dtype=np.int8)
+    for c in range(num_classes):
+        count = np.zeros(raters[0].shape, dtype=np.uint8)
+        for r in raters:
+            count += (r == c).view(np.uint8)
+        mask = count > best_count
+        winner[mask] = c
+        best_count[mask] = count[mask]
+        del count, mask
+    del best_count
+    return winner
+
+
+def _compute_staple(raters: List[np.ndarray]) -> np.ndarray:
+    """Compute multi-class STAPLE consensus from per-rater label arrays.
+
+    Runs binary STAPLE independently for each foreground class and
+    resolves overlaps via argmax on the estimated probability maps.
+    """
+    import SimpleITK as sitk
+
+    num_classes = max(int(r.max()) for r in raters) + 1
+    shape = raters[0].shape
+    # Accumulate class probabilities for overlap resolution
+    class_probs = np.zeros((num_classes,) + shape, dtype=np.float32)
+    class_probs[0] = 1.0  # background prior
+
+    for c in range(1, num_classes):
+        binary_segs = []
+        for r in raters:
+            binary = (r == c).astype(np.uint8)
+            binary_segs.append(sitk.GetImageFromArray(binary))
+        staple_filter = sitk.STAPLEImageFilter()
+        staple_filter.SetForegroundValue(1)
+        prob_img = staple_filter.Execute(binary_segs)
+        class_probs[c] = sitk.GetArrayFromImage(prob_img).astype(np.float32)
+        del binary_segs, prob_img
+
+    # Background = 1 - sum(foreground probs)
+    class_probs[0] = np.clip(1.0 - class_probs[1:].sum(axis=0), 0, 1)
+    consensus = np.argmax(class_probs, axis=0).astype(np.int8)
+    del class_probs
+    return consensus
 
 def load_ground_truth(gt_dir: str, case_id: str, num_raters: int, consensus_type: str=None) -> Optional[Tuple[Dict, np.ndarray]]:
     """Load ground truth for a case."""
@@ -111,7 +152,7 @@ def load_ground_truth(gt_dir: str, case_id: str, num_raters: int, consensus_type
         gt_path = os.path.join(gt_dir, f"{case_id}.nii.gz")
         if os.path.exists(gt_path):
             img = nib.load(gt_path)
-            data = img.get_fdata().astype(np.int32)
+            data = np.round(img.get_fdata()).astype(np.int8)
             gt = {
                 "raters": np.expand_dims(data, axis=0),
                 "consensus": data,
@@ -130,7 +171,7 @@ def load_ground_truth(gt_dir: str, case_id: str, num_raters: int, consensus_type
         gt_path = os.path.join(gt_dir, gt_file)
         if os.path.exists(gt_path):
             label = nib.load(gt_path)
-            label_stacked.append(label.get_fdata().astype(np.int32))
+            label_stacked.append(np.round(label.get_fdata()).astype(np.int8))
             affine_stacked.append(label.affine)
         else:
             raise FileNotFoundError(f"Ground truth file not found: {gt_path}")
@@ -139,7 +180,9 @@ def load_ground_truth(gt_dir: str, case_id: str, num_raters: int, consensus_type
         consensus_file = f"{case_id}_{consensus_type}.nii.gz"
         consensus_path = os.path.join(gt_dir, consensus_file)
         if os.path.exists(consensus_path):
-            consensus_label = nib.load(consensus_path).get_fdata().astype(np.int32)
+            consensus_label = np.round(nib.load(consensus_path).get_fdata()).astype(np.int8)
+        elif consensus_type == "staple":
+            consensus_label = _compute_staple(label_stacked)
         else:
             raise FileNotFoundError(f"Consensus ground truth file not found: {consensus_path}")
     else:

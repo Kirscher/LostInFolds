@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Core metric computation functions for ensemble predictions."""
 
+import ctypes
+import gc
 from typing import Dict, List, Optional, Tuple, Union
 
 import nibabel as nib
@@ -120,31 +122,41 @@ def get_dist_dict_from_dice(dice_dict: Dict[str, float]) -> Dict[str, float]:
     return dist_dict
 
 
-def compute_ged(gt_raters: np.ndarray, ensemble_pred: np.ndarray, num_classes: int, include_background:bool =False) -> Dict[str, float]:
-    """Compute Generalized Energy Distance (GED) metric."""
-    """
+def _mean_pairwise_dice(set_a: np.ndarray, set_b: np.ndarray, num_classes: int, include_background: bool = False) -> Dict[str, float]:
+    """Compute mean Dice across all (i, j) pairs from set_a and set_b iteratively (memory-efficient)."""
+    class_range = list(range(num_classes) if include_background else range(1, num_classes))
+    n_a, n_b = set_a.shape[0], set_b.shape[0]
+    accum = {f"class_{c}": 0.0 for c in class_range}
+    n_pairs = n_a * n_b
+    for i in range(n_a):
+        for j in range(n_b):
+            pair_dice = compute_dice(set_a[i], set_b[j], num_classes=num_classes, include_background=include_background)
+            for c in class_range:
+                accum[f"class_{c}"] += pair_dice[f"class_{c}"]
+    mean_dice = {k: v / n_pairs for k, v in accum.items()}
+    mean_dice["overall_dice"] = float(np.mean(list(mean_dice.values())))
+    return mean_dice
+
+
+def compute_ged(gt_raters: np.ndarray, ensemble_pred: np.ndarray, num_classes: int, include_background: bool = False) -> Dict[str, float]:
+    """Compute Generalized Energy Distance (GED) metric.
+
+    Memory-efficient version: iterates over pairs instead of expanding
+    all combinations into giant tiled arrays.
+
     Input:
         gt_raters: np.ndarray of shape (num_raters, H, W, (D))
-        ensemble_pred: np.ndarray of shape (num_folds, H, W, (D)) representing predicted segmentations from each fold
+        ensemble_pred: np.ndarray of shape (num_folds, H, W, (D))
     Output:
         ged: Dict with GED per class and overall GED
     """
-    gt_repeat_pred_interleave = get_repeated_interleave(labels=gt_raters, num_repeats=ensemble_pred.shape[0])
-    pred_repeat_gt_stacked = get_repeated_stacked(labels=ensemble_pred, num_repeats=gt_raters.shape[0])
-    dice_gt_pred = compute_dice(gt_repeat_pred_interleave, pred_repeat_gt_stacked, num_classes=num_classes, include_background=include_background)
-    dice_gt_pred["overall_dice"] = float(np.mean(list(dice_gt_pred.values())))
+    dice_gt_pred = _mean_pairwise_dice(gt_raters, ensemble_pred, num_classes, include_background)
     dist_gt_pred = get_dist_dict_from_dice(dice_gt_pred)
 
-    gt_repeat_gt_interleave = get_repeated_interleave(labels=gt_raters, num_repeats=gt_raters.shape[0])
-    gt_repeat_gt_stacked = get_repeated_stacked(labels=gt_raters, num_repeats=gt_raters.shape[0])
-    dice_gt_gt = compute_dice(gt_repeat_gt_interleave, gt_repeat_gt_stacked, num_classes=num_classes, include_background=include_background)
-    dice_gt_gt["overall_dice"] = float(np.mean(list(dice_gt_gt.values())))
+    dice_gt_gt = _mean_pairwise_dice(gt_raters, gt_raters, num_classes, include_background)
     dist_gt_gt = get_dist_dict_from_dice(dice_gt_gt)
 
-    pred_repeat_pred_interleave = get_repeated_interleave(labels=ensemble_pred, num_repeats=ensemble_pred.shape[0])
-    pred_repeat_pred_stacked = get_repeated_stacked(labels=ensemble_pred, num_repeats=ensemble_pred.shape[0])
-    dice_pred_pred = compute_dice(pred_repeat_pred_interleave, pred_repeat_pred_stacked, num_classes=num_classes, include_background=include_background)
-    dice_pred_pred["overall_dice"] = float(np.mean(list(dice_pred_pred.values())))
+    dice_pred_pred = _mean_pairwise_dice(ensemble_pred, ensemble_pred, num_classes, include_background)
     dist_pred_pred = get_dist_dict_from_dice(dice_pred_pred)
 
     ged_dict = {}
@@ -392,6 +404,106 @@ def compute_ba_ece(
         "bands": band_results,
         "counts": counts,
     }
+
+
+def compute_ba_ece_streaming(
+    confidence: np.ndarray,
+    labels: np.ndarray,
+    pred_labels: np.ndarray,
+    edges: Union[List[float], Tuple[float, ...]] = (0, 3, 7, 15, np.inf),
+) -> Dict[str, object]:
+    """Memory-efficient BA-ECE that streams one rater at a time.
+
+    Instead of stacking (n_raters, ...) distance and band arrays
+    this processes each rater
+    independently and accumulates band statistics incrementally.
+
+    Parameters
+    ----------
+    confidence : (H, W, D) — single confidence map (not tiled over raters)
+    labels : (n_raters, H, W, D) — per-rater GT labels
+    pred_labels : (H, W, D) — predicted class labels
+    edges : distance band edges
+    """
+    n_raters = labels.shape[0]
+    n_bands = len(edges) - 1
+    edge_list = list(edges)
+
+    # Per-band accumulators (streaming across raters)
+    band_unc_sum = np.zeros(n_bands, dtype=np.float64)
+    band_err_sum = np.zeros(n_bands, dtype=np.float64)
+    band_dist_sum = np.zeros(n_bands, dtype=np.float64)
+    band_count = np.zeros(n_bands, dtype=np.int64)
+
+    conf_flat = confidence.ravel().astype(np.float32)  # (V,)
+    pred_flat = pred_labels.ravel()  # (V,)
+
+    for r_idx in range(n_raters):
+        rater = labels[r_idx]
+        dist_r = unsigned_distance_to_boundary(rater)
+        rater_flat = rater.ravel()
+        dist_flat = dist_r.ravel()
+
+        error_r = (pred_flat != rater_flat).astype(np.float32)
+        unc_r = 1.0 - conf_flat
+
+        for b in range(n_bands):
+            lo, hi = edge_list[b], edge_list[b + 1]
+            sel = (dist_flat >= lo) & (dist_flat < hi)
+            cnt = int(sel.sum())
+            if cnt == 0:
+                continue
+            band_count[b] += cnt
+            band_unc_sum[b] += float(unc_r[sel].sum())
+            band_err_sum[b] += float(error_r[sel].sum())
+            band_dist_sum[b] += float(dist_flat[sel].sum())
+            del sel
+
+        del dist_r, rater_flat, dist_flat, error_r, unc_r
+        gc.collect()
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except (OSError, AttributeError):
+            pass
+
+    # Aggregate bands
+    total_weight = 0.0
+    weighted_sum = 0.0
+    band_results = []
+    counts_list = []
+
+    for b in range(n_bands):
+        cnt = int(band_count[b])
+        counts_list.append(cnt)
+        if cnt == 0:
+            band_results.append(dict(
+                band=b, count=0,
+                mean_uncertainty=np.nan, mean_error=np.nan,
+                calibration_error=np.nan, mean_distance=np.nan,
+                weight=0.0,
+            ))
+            continue
+
+        mean_unc = band_unc_sum[b] / cnt
+        mean_err = band_err_sum[b] / cnt
+        cal_err = abs(mean_unc - mean_err)
+        mean_dist = band_dist_sum[b] / cnt
+
+        weight = 1.0 / (mean_dist + 1.0)
+        total_weight += weight
+        weighted_sum += weight * cal_err
+
+        band_results.append(dict(
+            band=b, count=cnt,
+            mean_uncertainty=float(mean_unc),
+            mean_error=float(mean_err),
+            calibration_error=float(cal_err),
+            mean_distance=float(mean_dist),
+            weight=float(weight),
+        ))
+
+    ba = float(weighted_sum / max(total_weight, 1e-12))
+    return {"ba_ece": ba, "bands": band_results, "counts": counts_list}
 
 
 def rc_curve_stats(
