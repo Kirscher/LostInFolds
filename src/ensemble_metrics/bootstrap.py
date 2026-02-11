@@ -799,7 +799,7 @@ def _compare_aurc_per_case(
     results = []
 
     for rc_a in risk_cols_a:
-        suffix = rc_a.replace("risk_", "").replace("_a", "")
+        suffix = rc_a.replace("risk_", "", 1).removesuffix("_a")
         if suffix == "overall_risk":
             cc_a, rc_b, cc_b = "confid_overall_confid_a", "risk_overall_risk_b", "confid_overall_confid_b"
             label = "aurc_overall"
