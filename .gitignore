@@ -215,3 +215,4 @@ metrics_visualizations/
 comparison_results.csv
 visualize_metrics.py
 tests/test_ensemble_metrics_integration.py
+workdir_curvas/

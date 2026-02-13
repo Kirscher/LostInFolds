@@ -11,9 +11,7 @@ import pandas as pd
 from .metric_functions import (compute_ace, compute_aurc, compute_ba_ece,
                                compute_dice, compute_ensemble_entropy,
                                compute_entropy_map, compute_ged,
-                               compute_mutual_information_wrapper, compute_ncc,
-                               get_correct_binary_multirater,
-                               get_max_prob_for_pred_classes)
+                               compute_mutual_information_wrapper, compute_ncc)
 
 
 class BaseMetric:
@@ -29,7 +27,9 @@ class BaseMetric:
         preds_per_fold: Dict[int, np.ndarray],
         gt: Optional[np.ndarray] = None,
         affine: Optional[np.ndarray] = None,
-        case_output_dir: Optional[str] = None
+        case_output_dir: Optional[str] = None,
+        save_maps: bool = False,
+        precomputed: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Compute metric for a single case."""
         raise NotImplementedError
@@ -48,15 +48,15 @@ class PredictiveEntropyMetric(BaseMetric):
         preds_per_fold: Dict[int, np.ndarray],
         gt: Optional[np.ndarray] = None,
         affine: Optional[np.ndarray] = None,
-        case_output_dir: Optional[str] = None
+        case_output_dir: Optional[str] = None,
+        save_maps: bool = False,
+        precomputed: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Compute mean entropy map for a case."""
-        fold_indices = sorted(preds_per_fold.keys())
-        ensemble_probs = np.stack([preds_per_fold[f] for f in fold_indices], axis=0)
-        mean_probs = np.mean(ensemble_probs, axis=0)
+        mean_probs = precomputed["mean_probs"]
         predictive_entropy_map = compute_entropy_map(mean_probs)
         
-        if case_output_dir and affine is not None:
+        if save_maps and case_output_dir and affine is not None:
             if not os.path.exists(case_output_dir):
                 os.makedirs(case_output_dir, exist_ok=True)
             entropy_img = nib.Nifti1Image(predictive_entropy_map.astype(np.float32), affine)
@@ -79,14 +79,18 @@ class MutualInformationMetric(BaseMetric):
         preds_per_fold: Dict[int, np.ndarray],
         gt: Optional[np.ndarray] = None,
         affine: Optional[np.ndarray] = None,
-        case_output_dir: Optional[str] = None
+        case_output_dir: Optional[str] = None,
+        save_maps: bool = False,
+        precomputed: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Compute mutual information map for a case."""
-        fold_indices = sorted(preds_per_fold.keys())
-        ensemble_probs = np.stack([preds_per_fold[f] for f in fold_indices], axis=0)
-        mi_map = compute_mutual_information_wrapper(ensemble_probs)
+        mean_probs = precomputed["mean_probs"]
+        pred_entropy = compute_entropy_map(mean_probs)
+        expected_entropy = precomputed["expected_entropy_map"]
+        mi_map = np.maximum(pred_entropy - expected_entropy, 0.0)
+        del pred_entropy
         
-        if case_output_dir and affine is not None:
+        if save_maps and case_output_dir and affine is not None:
             if not os.path.exists(case_output_dir):
                 os.makedirs(case_output_dir, exist_ok=True)
             mi_img = nib.Nifti1Image(mi_map.astype(np.float32), affine)
@@ -109,14 +113,14 @@ class ExpectedEntropyMetric(BaseMetric):
         preds_per_fold: Dict[int, np.ndarray],
         gt: Optional[np.ndarray] = None,
         affine: Optional[np.ndarray] = None,
-        case_output_dir: Optional[str] = None
+        case_output_dir: Optional[str] = None,
+        save_maps: bool = False,
+        precomputed: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Compute mean entropy map for a case."""
-        fold_indices = sorted(preds_per_fold.keys())
-        entropies = [compute_entropy_map(preds_per_fold[f]) for f in fold_indices]
-        expected_entropy_map = np.mean(entropies, axis=0)
+        expected_entropy_map = precomputed["expected_entropy_map"]
         
-        if case_output_dir and affine is not None:
+        if save_maps and case_output_dir and affine is not None:
             if not os.path.exists(case_output_dir):
                 os.makedirs(case_output_dir, exist_ok=True)
             entropy_img = nib.Nifti1Image(expected_entropy_map.astype(np.float32), affine)
@@ -143,12 +147,14 @@ class PairwiseDiceMetric(BaseMetric):
         preds_per_fold: Dict[int, np.ndarray],
         gt: Optional[np.ndarray] = None,
         affine: Optional[np.ndarray] = None,
-        case_output_dir: Optional[str] = None
+        case_output_dir: Optional[str] = None,
+        save_maps: bool = False,
+        precomputed: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Compute pairwise Dice scores for a case."""
-        fold_indices = sorted(preds_per_fold.keys())
-        num_classes = preds_per_fold[fold_indices[0]].shape[0]
-        labels_per_fold = {f: np.argmax(preds_per_fold[f], axis=0) for f in fold_indices}
+        labels_per_fold = precomputed["labels_per_fold"]
+        fold_indices = sorted(labels_per_fold.keys())
+        num_classes = precomputed["mean_probs"].shape[0]
         
         pairwise_dice = []
         for i, fold_i in enumerate(fold_indices):
@@ -220,26 +226,25 @@ class ConsensusSegmentationMetric(BaseMetric):
         preds_per_fold: Dict[int, np.ndarray],
         gt: Optional[np.ndarray] = None,
         affine: Optional[np.ndarray] = None,
-        case_output_dir: Optional[str] = None
+        case_output_dir: Optional[str] = None,
+        save_maps: bool = False,
+        precomputed: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Compute consensus segmentation and compare with GT."""
-        fold_indices = sorted(preds_per_fold.keys())
-        ensemble_probs = np.stack([preds_per_fold[f] for f in fold_indices], axis=0)
-        mean_probs = np.mean(ensemble_probs, axis=0)
-        consensus_seg = np.argmax(mean_probs, axis=0)
+        consensus_seg = precomputed["consensus_seg"]
+        num_classes = precomputed["mean_probs"].shape[0]
+        labels_per_fold = precomputed["labels_per_fold"]
+        fold_indices = sorted(labels_per_fold.keys())
         
-        if case_output_dir and affine is not None:
-            if not os.path.exists(case_output_dir):
-                os.makedirs(case_output_dir, exist_ok=True)
+        if save_maps and case_output_dir and affine is not None:
             consensus_img = nib.Nifti1Image(consensus_seg.astype(np.uint8), affine)
             nib.save(consensus_img, os.path.join(case_output_dir, "consensus_seg.nii.gz"))
         
         if gt is not None:
-            num_classes = mean_probs.shape[0]
             gt_consensus = gt["consensus"]
             dice_scores = compute_dice(gt_consensus, consensus_seg, num_classes, include_background=False)
             fold_dice_scores = {
-                f"fold_{f}": compute_dice(gt_consensus, np.argmax(preds_per_fold[f], axis=0), num_classes, include_background=False)
+                f"fold_{f}": compute_dice(gt_consensus, labels_per_fold[f], num_classes, include_background=False)
                 for f in fold_indices
             }
             
@@ -292,15 +297,15 @@ class NCCMetric(BaseMetric):
         preds_per_fold: Dict[int, np.ndarray],
         gt: Optional[np.ndarray] = None,
         affine: Optional[np.ndarray] = None,
-        case_output_dir: Optional[str] = None
+        case_output_dir: Optional[str] = None,
+        save_maps: bool = False,
+        precomputed: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Compute NCC for a case. Requires expected entropy to be calculated first."""
+        """Compute NCC for a case using precomputed expected entropy."""
         gt_var = np.var(gt["raters"], axis=0)
-        expected_entropy_path = os.path.join(case_output_dir, "expected_entropy_map.nii.gz")
-        if not os.path.exists(expected_entropy_path):
-            raise FileNotFoundError(f"Expected entropy map not found for case {case_id}")
-        expected_entropy_pred = nib.load(expected_entropy_path).get_fdata()
+        expected_entropy_pred = precomputed["expected_entropy_map"]
         ncc_value = compute_ncc(expected_entropy_pred, gt_var)
+        del gt_var
         self.ncc_results.append({
             "case_id": case_id,
             "ncc": float(ncc_value),
@@ -333,13 +338,17 @@ class GEDMetric(BaseMetric):
         preds_per_fold: Dict[int, np.ndarray],
         gt: Optional[np.ndarray] = None,
         affine: Optional[np.ndarray] = None,
-        case_output_dir: Optional[str] = None
+        case_output_dir: Optional[str] = None,
+        save_maps: bool = False,
+        precomputed: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Compute GED for a case."""
-        num_classes = preds_per_fold[0].shape[0]
-        fold_indices = sorted(preds_per_fold.keys())
-        ensemble_preds = np.stack([np.argmax(preds_per_fold[f], axis=0) for f in fold_indices], axis=0)
+        labels_per_fold = precomputed["labels_per_fold"]
+        fold_indices = sorted(labels_per_fold.keys())
+        num_classes = precomputed["mean_probs"].shape[0]
+        ensemble_preds = np.stack([labels_per_fold[f] for f in fold_indices], axis=0)
         ged = compute_ged(gt_raters=gt["raters"], ensemble_pred=ensemble_preds, num_classes=num_classes)
+        del ensemble_preds
 
         ged_row = {
             "case_id": case_id,
@@ -374,18 +383,28 @@ class ACEMeric(BaseMetric):
             preds_per_fold: Dict[int, np.ndarray],
             gt: Optional[np.ndarray] = None,
             affine: Optional[np.ndarray] = None,
-            case_output_dir: Optional[str] = None
+            case_output_dir: Optional[str] = None,
+            save_maps: bool = False,
+            precomputed: Optional[Dict[str, Any]] = None
         ) -> Dict[str, Any]:
-        """Compute ACE for a case. Requires consensus prediction to be calculated first."""
-        conensus_pred_path = os.path.join(case_output_dir, "consensus_seg.nii.gz")
-        if not os.path.exists(conensus_pred_path):
-            raise FileNotFoundError(f"Consensus segmentation not found for case {case_id}")
-        consensus_pred = nib.load(conensus_pred_path).get_fdata()
+        """Compute ACE for a case.
+
+        Process raters one at a time to avoid np.repeat on huge arrays.
+        """
+        consensus_pred = precomputed["consensus_seg"]
+        conf = precomputed["max_conf"]
         gt_raters = gt["raters"]
-        correct = get_correct_binary_multirater(gt_raters=gt_raters, pred=consensus_pred)
-        conf = get_max_prob_for_pred_classes(probs_per_fold=preds_per_fold, consensus_pred=consensus_pred)
-        conf = np.repeat(conf[np.newaxis, ...], gt["raters"].shape[0], axis=0).ravel()
-        ace_value = compute_ace(correct=correct, calib_confids=conf, n_bins=20)
+        # Accumulate correct/conf per rater without tiling
+        correct_parts = []
+        conf_parts = []
+        for r_idx in range(gt_raters.shape[0]):
+            correct_parts.append((gt_raters[r_idx] == consensus_pred).ravel())
+            conf_parts.append(conf.ravel())
+        correct_all = np.concatenate(correct_parts).astype(np.int32)
+        conf_all = np.concatenate(conf_parts)
+        del correct_parts, conf_parts
+        ace_value = compute_ace(correct=correct_all, calib_confids=conf_all, n_bins=20)
+        del correct_all, conf_all
         self.ace_results.append({
             "case_id": case_id,
             "ace": float(ace_value),
@@ -418,17 +437,23 @@ class BAECEMetric(BaseMetric):
             preds_per_fold: Dict[int, np.ndarray],
             gt: Optional[np.ndarray] = None,
             affine: Optional[np.ndarray] = None,
-            case_output_dir: Optional[str] = None
+            case_output_dir: Optional[str] = None,
+            save_maps: bool = False,
+            precomputed: Optional[Dict[str, Any]] = None
         ) -> Dict[str, Any]:
-        """Compute BAECE for a case. Requires consensus prediction to be calculated first."""
-        conensus_pred_path = os.path.join(case_output_dir, "consensus_seg.nii.gz")
-        if not os.path.exists(conensus_pred_path):
-            raise FileNotFoundError(f"Consensus segmentation not found for case {case_id}")
-        consensus_pred = nib.load(conensus_pred_path).get_fdata()
-        conf = get_max_prob_for_pred_classes(probs_per_fold=preds_per_fold, consensus_pred=consensus_pred)
-        conf = np.repeat(conf[np.newaxis, ...], gt["raters"].shape[0], axis=0)
-        consensus_pred = np.repeat(consensus_pred[np.newaxis, ...], gt["raters"].shape[0], axis=0)
-        ba_ece = compute_ba_ece(confidence=conf, labels=gt["raters"], pred_labels=consensus_pred)
+        """Compute BAECE for a case.
+
+        Process raters one at a time to avoid stacking huge distance/band
+        arrays across all raters.
+        """
+        from .metric_functions import compute_ba_ece_streaming
+        consensus_pred = precomputed["consensus_seg"]
+        conf = precomputed["max_conf"]
+        ba_ece = compute_ba_ece_streaming(
+            confidence=conf,
+            labels=gt["raters"],
+            pred_labels=consensus_pred,
+        )
         self.baece_results.append({
             "case_id": case_id,
             **ba_ece
@@ -465,7 +490,9 @@ class AURCMetric(BaseMetric):
         preds_per_fold: Dict[int, np.ndarray],
         gt: Optional[np.ndarray] = None,
         affine: Optional[np.ndarray] = None,
-        case_output_dir: Optional[str] = None
+        case_output_dir: Optional[str] = None,
+        save_maps: bool = False,
+        precomputed: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Compute risks and confids for a case. The final AURC is computed in export_summaries.
@@ -483,7 +510,7 @@ class AURCMetric(BaseMetric):
         pairwise_dice = pairwise_dice_df[pairwise_dice_df["case_id"] == case_id]
         pairwise_dice_mean = pairwise_dice.drop(["case_id", "fold_i", "fold_j"], axis=1).mean()
         
-        self.num_classes = preds_per_fold[0].shape[0]
+        self.num_classes = precomputed["mean_probs"].shape[0]
         risk_dict = {}
         confid_dict = {}
         for c in range(1, self.num_classes):
@@ -519,6 +546,20 @@ class AURCMetric(BaseMetric):
         
         aurc_df = pd.DataFrame([aurc_dict])
         aurc_df.to_csv(os.path.join(self.output_dir, "aurc.csv"), index=False)
+
+        # Save per-case risk and confidence data for bootstrap resampling
+        per_case_rows = []
+        for r, c in zip(self.risks, self.confids):
+            row = {"case_id": r["case_id"]}
+            for key in r:
+                if key != "case_id":
+                    row[f"risk_{key}"] = r[key]
+            for key in c:
+                if key != "case_id":
+                    row[f"confid_{key}"] = c[key]
+            per_case_rows.append(row)
+        per_case_df = pd.DataFrame(per_case_rows)
+        per_case_df.to_csv(os.path.join(self.output_dir, "aurc_per_case.csv"), index=False)
 
 
 METRICS = {

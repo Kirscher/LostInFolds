@@ -212,9 +212,29 @@ def _bca_interval(
     return ci_lower, ci_upper
 
 
+# Files that should never be bootstrapped or compared
+_SKIP_FILES = {
+    "timing_profile.csv",
+    "dice_vs_gt_summary.csv",
+    "pairwise_dice_summary.csv",
+    "aurc.csv",           # single-row summary; bootstrapped via aurc_per_case.csv
+}
+
+# Multi-column per-case files: each numeric column is a separate metric
+_MULTICOLUMN_FILES = {
+    "ged.csv",
+    "dice_vs_gt_per_case.csv",
+}
+
+# Multi-row per-case files: need aggregation before bootstrap
+_MULTIROW_FILES = {
+    "pairwise_dice_per_case.csv",
+}
+
+
 def load_metric_csv(filepath: str) -> Tuple[pd.DataFrame, str]:
     """
-    Load a metric CSV file and extract the metric name.
+    Load a simple metric CSV file (case_id + one value column).
     
     Parameters
     ----------
@@ -228,17 +248,48 @@ def load_metric_csv(filepath: str) -> Tuple[pd.DataFrame, str]:
     """
     df = pd.read_csv(filepath)
     
+    if "case_id" not in df.columns:
+        raise KeyError("case_id")
+    
     # Get metric name from columns (second column typically)
     metric_name = [col for col in df.columns if col != "case_id"][0]
     
     # Filter out summary rows (mean, std, etc.)
-    # Convert case_id to string to handle numeric or mixed types
     summary_keywords = ["mean", "std", "median", "min", "max", "sum", "count"]
     df["case_id"] = df["case_id"].fillna("").astype(str)
     mask = ~df["case_id"].str.lower().isin(summary_keywords)
     df_cases = df[mask].copy()
     
     return df_cases, metric_name
+
+
+def load_multicolumn_csv(filepath: str) -> Tuple[pd.DataFrame, List[str]]:
+    """Load a per-case CSV with multiple numeric columns.
+    
+    Returns the DataFrame (one row per case) and the list of metric column names.
+    """
+    df = pd.read_csv(filepath)
+    if "case_id" not in df.columns:
+        raise KeyError("case_id")
+    metric_cols = [c for c in df.columns if c != "case_id"]
+    df["case_id"] = df["case_id"].astype(str)
+    return df, metric_cols
+
+
+def load_pairwise_dice_csv(filepath: str) -> Tuple[pd.DataFrame, List[str]]:
+    """Load pairwise dice CSV and aggregate to one row per case.
+    
+    The raw file has columns: case_id, fold_i, fold_j, overall_dice, class_0, ...
+    We average over all fold pairs per case.
+    
+    Returns the per-case DataFrame and the list of metric column names.
+    """
+    df = pd.read_csv(filepath)
+    if "case_id" not in df.columns:
+        raise KeyError("case_id")
+    value_cols = [c for c in df.columns if c not in ("case_id", "fold_i", "fold_j")]
+    per_case = df.groupby("case_id")[value_cols].mean().reset_index()
+    return per_case, value_cols
 
 
 def bootstrap_metric_file(
@@ -307,6 +358,92 @@ def bootstrap_metric_file(
     return results
 
 
+def bootstrap_aurc_file(
+    filepath: str,
+    n_bootstrap: int = 10000,
+    ci_level: float = 0.95,
+    method: str = "bca",
+    random_state: Optional[int] = None
+) -> List[BootstrapResult]:
+    """
+    Bootstrap AURC by resampling cases and recomputing the global metric.
+
+    The file must be an ``aurc_per_case.csv`` containing per-case risk and
+    confidence columns (produced by ``AURCMetric.export_summaries``).
+
+    Parameters
+    ----------
+    filepath : str
+        Path to ``aurc_per_case.csv``.
+    n_bootstrap : int
+        Number of bootstrap resamples.
+    ci_level : float
+        Confidence level.
+    method : str
+        Bootstrap CI method ('bca', 'percentile', 'basic').
+    random_state : int, optional
+        Random seed.
+
+    Returns
+    -------
+    List[BootstrapResult]
+        One result per AURC column (per-class + overall).
+    """
+    from .metric_functions import compute_aurc as _compute_aurc
+
+    df = pd.read_csv(filepath)
+    # Detect risk/confid column pairs
+    risk_cols = [c for c in df.columns if c.startswith("risk_")]
+    confid_cols = [c for c in df.columns if c.startswith("confid_")]
+
+    # Build matched pairs: risk_class_1 <-> confid_class_1, risk_overall_risk <-> confid_overall_confid
+    pairs = []
+    for rc in risk_cols:
+        suffix = rc.replace("risk_", "", 1)  # e.g. "class_1" or "overall_risk"
+        # Try to find matching confid column
+        if suffix == "overall_risk":
+            cc = "confid_overall_confid"
+            label = "overall_aurc"
+        else:
+            cc = f"confid_{suffix}"
+            label = f"{suffix}"
+        if cc in confid_cols:
+            pairs.append((rc, cc, label))
+
+    if not pairs:
+        raise ValueError(f"No risk/confid column pairs found in {filepath}")
+
+    results = []
+    for risk_col, confid_col, aurc_label in pairs:
+        risks_all = df[risk_col].values
+        confids_all = df[confid_col].values
+        n = len(risks_all)
+
+        def _aurc_from_indices(idx):
+            return _compute_aurc(risks_all[idx], confids_all[idx])
+
+        # Wrap as a statistic over an index array
+        index_array = np.arange(n)
+
+        def statistic_func(data, _rc=risk_col, _cc=confid_col):
+            idx = data.astype(int)
+            return _compute_aurc(risks_all[idx], confids_all[idx])
+
+        result = bootstrap_statistic(
+            index_array,
+            statistic_func=statistic_func,
+            n_bootstrap=n_bootstrap,
+            ci_level=ci_level,
+            method=method,
+            random_state=random_state
+        )
+        result.metric_name = f"aurc_{aurc_label}"
+        result.statistic = "global"
+        results.append(result)
+
+    return results
+
+
 def bootstrap_metrics_directory(
     metrics_dir: str,
     output_file: Optional[str] = None,
@@ -346,15 +483,37 @@ def bootstrap_metrics_directory(
     """
     csv_files = glob.glob(os.path.join(metrics_dir, metric_pattern))
     
-    # Filter out summary files that might exist
-    csv_files = [f for f in csv_files if not os.path.basename(f).startswith("bootstrap_")]
+    # Filter out bootstrap results and files that should be skipped
+    csv_files = [
+        f for f in csv_files
+        if not os.path.basename(f).startswith("bootstrap_")
+        and os.path.basename(f) not in _SKIP_FILES
+    ]
     
     if not csv_files:
         raise FileNotFoundError(f"No CSV files found in {metrics_dir} matching pattern {metric_pattern}")
     
     all_results = []
     
-    for filepath in sorted(csv_files):
+    # Route each file to the appropriate handler
+    aurc_per_case_file = None
+    regular_files = []
+    multicolumn_files = []
+    multirow_files = []
+    
+    for f in csv_files:
+        bname = os.path.basename(f)
+        if bname == "aurc_per_case.csv":
+            aurc_per_case_file = f
+        elif bname in _MULTICOLUMN_FILES:
+            multicolumn_files.append(f)
+        elif bname in _MULTIROW_FILES:
+            multirow_files.append(f)
+        else:
+            regular_files.append(f)
+    
+    # Bootstrap simple per-case metric files (case_id + one value column)
+    for filepath in sorted(regular_files):
         try:
             results = bootstrap_metric_file(
                 filepath,
@@ -368,6 +527,53 @@ def bootstrap_metrics_directory(
         except Exception as e:
             print(f"Warning: Failed to process {filepath}: {e}")
             continue
+    
+    # Bootstrap multi-column per-case files (e.g. ged.csv, dice_vs_gt_per_case.csv)
+    for filepath in sorted(multicolumn_files):
+        try:
+            results = _bootstrap_multicolumn_file(
+                filepath,
+                n_bootstrap=n_bootstrap,
+                ci_level=ci_level,
+                method=method,
+                statistics=statistics,
+                random_state=random_state
+            )
+            all_results.extend(results)
+        except Exception as e:
+            print(f"Warning: Failed to process {filepath}: {e}")
+            continue
+    
+    # Bootstrap multi-row per-case files (e.g. pairwise_dice_per_case.csv)
+    for filepath in sorted(multirow_files):
+        try:
+            results = _bootstrap_multirow_file(
+                filepath,
+                n_bootstrap=n_bootstrap,
+                ci_level=ci_level,
+                method=method,
+                statistics=statistics,
+                random_state=random_state
+            )
+            all_results.extend(results)
+        except Exception as e:
+            print(f"Warning: Failed to process {filepath}: {e}")
+            continue
+    
+    # Bootstrap global AURC metric by resampling cases
+    if aurc_per_case_file is not None:
+        try:
+            aurc_results = bootstrap_aurc_file(
+                aurc_per_case_file,
+                n_bootstrap=n_bootstrap,
+                ci_level=ci_level,
+                method=method,
+                random_state=random_state
+            )
+            all_results.extend(aurc_results)
+        except Exception as e:
+            print(f"Warning: Failed to bootstrap AURC from {aurc_per_case_file}: {e}")
+    
     
     # Convert to DataFrame
     df = pd.DataFrame([
@@ -565,6 +771,246 @@ def cohens_d(data_a: np.ndarray, data_b: np.ndarray) -> float:
     return d
 
 
+def _compare_aurc_per_case(
+    filepath_a: str,
+    filepath_b: str,
+    method_a_name: str = "Method A",
+    method_b_name: str = "Method B",
+    n_bootstrap: int = 10000,
+    ci_level: float = 0.95,
+    random_state: Optional[int] = None,
+) -> List[ComparisonResult]:
+    """
+    Paired bootstrap comparison of AURC between two methods.
+
+    Resamples cases (rows) with replacement, recomputes AURC for each
+    method on the resample, and tests the difference.
+    """
+    from .metric_functions import compute_aurc as _compute_aurc
+
+    df_a = pd.read_csv(filepath_a)
+    df_b = pd.read_csv(filepath_b)
+    merged = pd.merge(df_a, df_b, on="case_id", suffixes=("_a", "_b"))
+    n = len(merged)
+    if n < 2:
+        raise ValueError("Insufficient matched cases for AURC comparison")
+
+    risk_cols_a = sorted([c for c in merged.columns if c.startswith("risk_") and c.endswith("_a")])
+    results = []
+
+    for rc_a in risk_cols_a:
+        suffix = rc_a.replace("risk_", "", 1).removesuffix("_a")
+        if suffix == "overall_risk":
+            cc_a, rc_b, cc_b = "confid_overall_confid_a", "risk_overall_risk_b", "confid_overall_confid_b"
+            label = "aurc_overall"
+        else:
+            cc_a = f"confid_{suffix}_a"
+            rc_b = f"risk_{suffix}_b"
+            cc_b = f"confid_{suffix}_b"
+            label = f"aurc_{suffix}"
+        if not all(c in merged.columns for c in [cc_a, rc_b, cc_b]):
+            continue
+
+        ra = merged[rc_a].values
+        ca = merged[cc_a].values
+        rb = merged[rc_b].values
+        cb = merged[cc_b].values
+
+        aurc_a_point = _compute_aurc(ra, ca)
+        aurc_b_point = _compute_aurc(rb, cb)
+        observed_diff = aurc_b_point - aurc_a_point
+
+        rng = np.random.default_rng(random_state)
+        boot_diffs = np.zeros(n_bootstrap)
+        for i in range(n_bootstrap):
+            idx = rng.integers(0, n, size=n)
+            boot_diffs[i] = _compute_aurc(rb[idx], cb[idx]) - _compute_aurc(ra[idx], ca[idx])
+
+        alpha = 1 - ci_level
+        ci_lower = np.percentile(boot_diffs, 100 * alpha / 2)
+        ci_upper = np.percentile(boot_diffs, 100 * (1 - alpha / 2))
+        # Center on observed_diff (not bootstrap mean) to correctly specify the null
+        shifted = boot_diffs - observed_diff
+        p_value = max(np.mean(np.abs(shifted) >= np.abs(observed_diff)), 1.0 / n_bootstrap)
+        significant = (ci_lower > 0) or (ci_upper < 0)
+        # Cohen's d on per-case risk differences as proxy
+        per_case_diff = rb - ra
+        effect = float(np.mean(per_case_diff) / (np.std(per_case_diff, ddof=1) + 1e-10))
+
+        results.append(ComparisonResult(
+            metric_name=label,
+            method_a_name=method_a_name,
+            method_b_name=method_b_name,
+            mean_a=aurc_a_point,
+            mean_b=aurc_b_point,
+            difference=observed_diff,
+            ci_lower=ci_lower,
+            ci_upper=ci_upper,
+            ci_level=ci_level,
+            p_value=p_value,
+            effect_size=effect,
+            n_samples=n,
+            n_bootstrap=n_bootstrap,
+            significant=significant,
+        ))
+
+    return results
+
+
+def _bootstrap_multicolumn_file(
+    filepath: str,
+    n_bootstrap: int = 10000,
+    ci_level: float = 0.95,
+    method: str = "bca",
+    statistics: Optional[List[str]] = None,
+    random_state: Optional[int] = None,
+) -> List[BootstrapResult]:
+    """Bootstrap each numeric column of a multi-column per-case CSV."""
+    if statistics is None:
+        statistics = ["mean", "median", "std"]
+    stat_funcs = {
+        "mean": np.mean, "median": np.median,
+        "std": lambda x: np.std(x, ddof=1),
+    }
+    df, metric_cols = load_multicolumn_csv(filepath)
+    prefix = os.path.splitext(os.path.basename(filepath))[0]  # e.g. "ged"
+    results = []
+    for col in metric_cols:
+        values = pd.to_numeric(df[col], errors="coerce").dropna().values
+        if len(values) < 2:
+            continue
+        for stat_name in statistics:
+            result = bootstrap_statistic(
+                values,
+                statistic_func=stat_funcs[stat_name],
+                n_bootstrap=n_bootstrap,
+                ci_level=ci_level,
+                method=method,
+                random_state=random_state,
+            )
+            result.metric_name = f"{prefix}_{col}" if prefix not in col else col
+            result.statistic = stat_name
+            results.append(result)
+    return results
+
+
+def _bootstrap_multirow_file(
+    filepath: str,
+    n_bootstrap: int = 10000,
+    ci_level: float = 0.95,
+    method: str = "bca",
+    statistics: Optional[List[str]] = None,
+    random_state: Optional[int] = None,
+) -> List[BootstrapResult]:
+    """Bootstrap a multi-row per-case CSV by first aggregating to one row per case."""
+    if statistics is None:
+        statistics = ["mean", "median", "std"]
+    stat_funcs = {
+        "mean": np.mean, "median": np.median,
+        "std": lambda x: np.std(x, ddof=1),
+    }
+    per_case, value_cols = load_pairwise_dice_csv(filepath)
+    prefix = os.path.splitext(os.path.basename(filepath))[0]  # e.g. "pairwise_dice_per_case"
+    # Shorten prefix
+    if "pairwise_dice" in prefix:
+        prefix = "pairwise_dice"
+    results = []
+    for col in value_cols:
+        values = pd.to_numeric(per_case[col], errors="coerce").dropna().values
+        if len(values) < 2:
+            continue
+        for stat_name in statistics:
+            result = bootstrap_statistic(
+                values,
+                statistic_func=stat_funcs[stat_name],
+                n_bootstrap=n_bootstrap,
+                ci_level=ci_level,
+                method=method,
+                random_state=random_state,
+            )
+            result.metric_name = f"{prefix}_{col}"
+            result.statistic = stat_name
+            results.append(result)
+    return results
+
+
+def _compare_multicolumn(
+    filepath_a: str,
+    filepath_b: str,
+    method_a_name: str = "Method A",
+    method_b_name: str = "Method B",
+    n_bootstrap: int = 10000,
+    ci_level: float = 0.95,
+    random_state: Optional[int] = None,
+) -> List[ComparisonResult]:
+    """Paired bootstrap comparison for multi-column per-case files."""
+    df_a, cols_a = load_multicolumn_csv(filepath_a)
+    df_b, cols_b = load_multicolumn_csv(filepath_b)
+    common_cols = [c for c in cols_a if c in cols_b]
+    merged = pd.merge(df_a, df_b, on="case_id", suffixes=("_a", "_b"))
+    if len(merged) < 2:
+        return []
+    prefix = os.path.splitext(os.path.basename(filepath_a))[0]
+    results = []
+    for col in common_cols:
+        va = merged[f"{col}_a"].values.astype(float)
+        vb = merged[f"{col}_b"].values.astype(float)
+        diff, ci_lo, ci_hi, pval = paired_bootstrap_test(
+            va, vb, n_bootstrap=n_bootstrap, ci_level=ci_level,
+            random_state=random_state,
+        )
+        effect = cohens_d(va, vb)
+        significant = (ci_lo > 0) or (ci_hi < 0)
+        label = f"{prefix}_{col}" if prefix not in col else col
+        results.append(ComparisonResult(
+            metric_name=label, method_a_name=method_a_name,
+            method_b_name=method_b_name, mean_a=float(np.mean(va)),
+            mean_b=float(np.mean(vb)), difference=diff,
+            ci_lower=ci_lo, ci_upper=ci_hi, ci_level=ci_level,
+            p_value=pval, effect_size=effect, n_samples=len(merged),
+            n_bootstrap=n_bootstrap, significant=significant,
+        ))
+    return results
+
+
+def _compare_multirow(
+    filepath_a: str,
+    filepath_b: str,
+    method_a_name: str = "Method A",
+    method_b_name: str = "Method B",
+    n_bootstrap: int = 10000,
+    ci_level: float = 0.95,
+    random_state: Optional[int] = None,
+) -> List[ComparisonResult]:
+    """Paired bootstrap comparison for multi-row per-case files (e.g. pairwise dice)."""
+    per_case_a, cols_a = load_pairwise_dice_csv(filepath_a)
+    per_case_b, cols_b = load_pairwise_dice_csv(filepath_b)
+    common_cols = [c for c in cols_a if c in cols_b]
+    merged = pd.merge(per_case_a, per_case_b, on="case_id", suffixes=("_a", "_b"))
+    if len(merged) < 2:
+        return []
+    prefix = "pairwise_dice"
+    results = []
+    for col in common_cols:
+        va = merged[f"{col}_a"].values.astype(float)
+        vb = merged[f"{col}_b"].values.astype(float)
+        diff, ci_lo, ci_hi, pval = paired_bootstrap_test(
+            va, vb, n_bootstrap=n_bootstrap, ci_level=ci_level,
+            random_state=random_state,
+        )
+        effect = cohens_d(va, vb)
+        significant = (ci_lo > 0) or (ci_hi < 0)
+        results.append(ComparisonResult(
+            metric_name=f"{prefix}_{col}", method_a_name=method_a_name,
+            method_b_name=method_b_name, mean_a=float(np.mean(va)),
+            mean_b=float(np.mean(vb)), difference=diff,
+            ci_lower=ci_lo, ci_upper=ci_hi, ci_level=ci_level,
+            p_value=pval, effect_size=effect, n_samples=len(merged),
+            n_bootstrap=n_bootstrap, significant=significant,
+        ))
+    return results
+
+
 def compare_methods(
     metrics_dir_a: str,
     metrics_dir_b: str,
@@ -606,9 +1052,15 @@ def compare_methods(
     files_a = {os.path.basename(f): f for f in glob.glob(os.path.join(metrics_dir_a, metric_pattern))}
     files_b = {os.path.basename(f): f for f in glob.glob(os.path.join(metrics_dir_b, metric_pattern))}
     
-    # Filter out bootstrap results
-    files_a = {k: v for k, v in files_a.items() if not k.startswith("bootstrap_")}
-    files_b = {k: v for k, v in files_b.items() if not k.startswith("bootstrap_")}
+    # Filter out bootstrap results and non-metric files
+    files_a = {
+        k: v for k, v in files_a.items()
+        if not k.startswith("bootstrap_") and k not in _SKIP_FILES
+    }
+    files_b = {
+        k: v for k, v in files_b.items()
+        if not k.startswith("bootstrap_") and k not in _SKIP_FILES
+    }
     
     common_files = set(files_a.keys()) & set(files_b.keys())
     
@@ -618,6 +1070,52 @@ def compare_methods(
     results = []
     
     for filename in sorted(common_files):
+        # Handle global AURC comparison via per-case resampling
+        if filename == "aurc_per_case.csv":
+            try:
+                results.extend(_compare_aurc_per_case(
+                    files_a[filename], files_b[filename],
+                    method_a_name=method_a_name,
+                    method_b_name=method_b_name,
+                    n_bootstrap=n_bootstrap,
+                    ci_level=ci_level,
+                    random_state=random_state,
+                ))
+            except Exception as e:
+                print(f"Warning: Failed to compare AURC: {e}")
+            continue
+        
+        # Multi-column per-case files (GED, dice_vs_gt_per_case)
+        if filename in _MULTICOLUMN_FILES:
+            try:
+                results.extend(_compare_multicolumn(
+                    files_a[filename], files_b[filename],
+                    method_a_name=method_a_name,
+                    method_b_name=method_b_name,
+                    n_bootstrap=n_bootstrap,
+                    ci_level=ci_level,
+                    random_state=random_state,
+                ))
+            except Exception as e:
+                print(f"Warning: Failed to compare {filename}: {e}")
+            continue
+        
+        # Multi-row per-case files (pairwise_dice_per_case)
+        if filename in _MULTIROW_FILES:
+            try:
+                results.extend(_compare_multirow(
+                    files_a[filename], files_b[filename],
+                    method_a_name=method_a_name,
+                    method_b_name=method_b_name,
+                    n_bootstrap=n_bootstrap,
+                    ci_level=ci_level,
+                    random_state=random_state,
+                ))
+            except Exception as e:
+                print(f"Warning: Failed to compare {filename}: {e}")
+            continue
+        
+        # Simple single-column per-case files (ace, ba_ece, ncc)
         try:
             df_a, metric_name = load_metric_csv(files_a[filename])
             df_b, _ = load_metric_csv(files_b[filename])
