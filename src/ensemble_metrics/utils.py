@@ -77,7 +77,14 @@ def load_prediction(fold_path: str, case_id: str) -> Tuple[np.ndarray, Optional[
     npz_path = os.path.join(fold_path, f"{case_id}.npz")
     if os.path.exists(npz_path):
         data = load_array(npz_path, is_ensemble=False)
-        data = data.swapaxes(1, -1)
+        # nnUNet stores 3D as (C, D, H, W) and 2D as (C, 1, H, W).
+        # nibabel convention is (W, H, D) for 3D, and (H, W) for 2D.
+        if data.ndim == 4 and data.shape[1] == 1:
+            # 2D: squeeze dummy depth → (C, H, W)
+            data = data.squeeze(1)
+        else:
+            # 3D: swap to nibabel order (C, D, H, W) → (C, W, H, D)
+            data = data.swapaxes(1, -1)
         nii_ref = os.path.join(fold_path, f"{case_id}.nii.gz")
         if os.path.exists(nii_ref):
             affine = nib.load(nii_ref).affine
@@ -198,6 +205,9 @@ def load_ground_truth(gt_dir: str, case_id: str, num_raters: int, consensus_type
 
 def standardize_prediction(pred: np.ndarray) -> np.ndarray:
     """Standardize prediction to (num_classes, ...) format."""
+    # Squeeze trailing size-1 dims (e.g. 2D npz loaded as (C, H, W, 1))
+    while pred.ndim > 2 and pred.shape[-1] == 1:
+        pred = pred.squeeze(-1)
     if pred.ndim == 4 and pred.shape[1] == 1:
         pred = pred.squeeze(1)
     

@@ -95,8 +95,8 @@ def main():
     
     args = parser.parse_args()
 
-    if args.consensus_type not in ["staple", "majority", "none"]:
-        raise ValueError("consensus-type must be one of 'staple', 'majority', or 'none'")
+    if args.consensus_type not in ["staple", "majority", "consensus", "none"]:
+        raise ValueError("consensus-type must be one of 'staple', 'majority', 'consensus', or 'none'")
     if args.consensus_type == "none":
         args.consensus_type = None
     
