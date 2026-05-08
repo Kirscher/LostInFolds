@@ -9,9 +9,19 @@ Each dataset should be prepared in the following manner:
 - imagesOodTs: images used for OoD-testing
 - labelsOoDTs: labels used for OoD-testing, multi-rater masks (one label per rater)
 
+Set the nnU-Net paths to local directories before preprocessing:
+
+```bash
+export nnUNet_raw="<NNUNET_RAW>"
+export nnUNet_preprocessed="<NNUNET_PREPROCESSED>"
+export nnUNet_results="<NNUNET_RESULTS>"
+```
+
+Raw datasets, converted nnU-Net folders, preprocessed data, predictions, and model checkpoints are local artifacts and should not be committed.
+
 ## GleasonXAI
 
-Dataset downloaded from [here](https://springernature.figshare.com/articles/dataset/Pathologist-like_explainable_AI_for_interpretable_Gleason_grading_in_prostate_cancer/27301845) (TissueArray images and all refined milti-rater annotations), [here](https://gleason2019.grand-challenge.org/Register/) (Gleason2019 images) and [here](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/OCYCMP) (Harvard Dataverse images).
+Dataset downloaded from [here](https://springernature.figshare.com/articles/dataset/Pathologist-like_explainable_AI_for_interpretable_Gleason_grading_in_prostate_cancer/27301845) (TissueArray images and all refined multi-rater annotations), [here](https://gleason2019.grand-challenge.org/Register/) (Gleason2019 images) and [here](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/OCYCMP) (Harvard Dataverse images).
 
 Multi-rater labels are generated for all raters and stored under the per-subdataset all_raters folders.
 
@@ -45,10 +55,11 @@ python3 ./src/data/gleasonxai/prepare.py --task to_nnunet_raw_dataset --raw_data
 ```
 
 Preprocessed GleasonXAI data:
-- set environmental variables:
+- set environment variables:
 ```
-export nnUNet_raw="/home/m391k/E132-Projekte/Projects/2026_Kirscher_LostInFolds/data/GleasonXAI"
-export nnUNet_preprocessed="/home/m391k/cluster-data_all/t789r/preprocessed_data"
+export nnUNet_raw="<NNUNET_RAW>"
+export nnUNet_preprocessed="<NNUNET_PREPROCESSED>"
+export nnUNet_results="<NNUNET_RESULTS>"
 ```
 - start preprocessing: `nnUNetv2_plan_and_preprocess -d 003 -c 2d -pl nnUNetPlannerResEncM --verify_dataset_integrity -np 10`
 
@@ -56,10 +67,8 @@ export nnUNet_preprocessed="/home/m391k/cluster-data_all/t789r/preprocessed_data
 
 Dataset downloaded from [here](https://deepblue.lib.umich.edu/data/concern/data_sets/3b591905z).
 
-nnUNet_raw in ~/E132-Projekte/Projects/2024_Bujotzek_Noisy-Seg-Label-Benchi/data/RIGA/nnUNet_raw.
-Data separated according (for FL) according to their originating subdatasets.
-
-Multi-rater labels in /home/m391k/E132-Projekte/Projects/2024_Bujotzek_Noisy-Seg-Label-Benchi/data/RIGA/img_segmask_tif/*subdataset*/.
+Place the downloaded RIGA files under `<RAW_DATA_DIR>/img_segmask_tif/`, preserving the original subdataset folders.
+Data are separated according to their originating subdatasets.
 
 Subdatasets are:
 - BinRushed: 195 samples
@@ -80,10 +89,11 @@ Prepare RIGA to nnUNet_raw data format:
 - Execute `python3 ./src/data/riga/prepare.py`.
 
 Preprocessed RIGA data:
-- set environmental variables:
+- set environment variables:
 ```
-export nnUNet_raw="/home/m391k/E132-Projekte/Projects/2026_Kirscher_LostInFolds/data/RIGA"
-export nnUNet_preprocessed="/home/m391k/cluster-data_all/t789r/preprocessed_data"
+export nnUNet_raw="<NNUNET_RAW>"
+export nnUNet_preprocessed="<NNUNET_PREPROCESSED>"
+export nnUNet_results="<NNUNET_RESULTS>"
 ```
 - start preprocessing: `nnUNetv2_plan_and_preprocess -d 004 -c 2d -pl nnUNetPlannerResEncM --verify_dataset_integrity -np 10`
 
@@ -102,10 +112,11 @@ python3 ./src/data/curvas/prepare.py --task to_nnunet_raw_dataset --raw_data_dir
 ```
 
 Preprocessed CURVAS data:
-- set environmental variables:
+- set environment variables:
 ```
-export nnUNet_raw="/home/m391k/E132-Projekte/Projects/2026_Kirscher_LostInFolds/data/CURVAS2024"
-export nnUNet_preprocessed="/home/m391k/cluster-data_all/t789r/preprocessed_data"
+export nnUNet_raw="<NNUNET_RAW>"
+export nnUNet_preprocessed="<NNUNET_PREPROCESSED>"
+export nnUNet_results="<NNUNET_RESULTS>"
 ```
 - start preprocessing: `nnUNetv2_plan_and_preprocess -d 005 -c 2d -pl nnUNetPlannerResEncM --verify_dataset_integrity -np 10`
 
