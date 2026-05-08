@@ -6,6 +6,7 @@ on:
       - main
       - master
       - tests
+      - camera-ready-miccai-2026
   pull_request:
 
 jobs:
@@ -28,6 +29,4 @@ jobs:
           pip install pytest
 
       - name: Run tests
-        run: |
-          pytest -q || pytest -q -k ""  # allow passing even with only placeholder tests
-
+        run: pytest -q

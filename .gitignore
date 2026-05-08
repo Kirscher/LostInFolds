@@ -216,3 +216,25 @@ comparison_results.csv
 visualize_metrics.py
 tests/test_ensemble_metrics_integration.py
 workdir_curvas/
+
+# Medical imaging data, model outputs, and experiment artifacts
+/data/
+/datasets/
+/nnUNet_raw/
+/nnUNet_preprocessed/
+/nnUNet_results/
+/results/
+/outputs/
+/predictions/
+/checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.nii
+*.nii.gz
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.tif
+*.tiff
