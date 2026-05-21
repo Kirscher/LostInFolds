@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/Kirscher/LostInFolds/actions/workflows/tests.yml/badge.svg)](https://github.com/Kirscher/LostInFolds/actions/workflows/tests.yml)
 
-Companion repository for the MICCAI 2026 paper **"Lost in the Folds: When Cross-Validation Is Not a Deep Ensemble for Uncertainty Estimation"**.
+Companion repository for the MICCAI 2026 [paper](https://hal.science/hal-05616884v1) **"Lost in the Folds: When Cross-Validation Is Not a Deep Ensemble for Uncertainty Estimation"**.
 
 The code supports public multi-rater medical image segmentation experiments comparing cross-validation (CV) ensembles with deep ensembles (DE). It includes dataset preparation helpers and ensemble uncertainty metrics used for calibration, ambiguity modeling, failure detection, and segmentation quality analysis.
 
@@ -46,5 +46,12 @@ Datasets must be downloaded from their original providers and prepared locally. 
 If you use this work, please cite:
 
 ```
-TODO(author): Add BibTeX or proceedings reference when published.
+@inproceedings{kirscher2026lost,
+  title = {Lost in the Folds: When Cross-Validation Is Not a Deep Ensemble for Uncertainty Estimation},
+  author = {Kirscher, Tristan and Bujotzek, Markus and Kirchhoff, Yannick and Rokuss, Maximilian and Isensee, Fabian and Kahl, Kim-Celine and Kovacs, Balint and Maier-Hein, Klaus},
+  booktitle = {29th International Conference on Medical Image Computing and Computer Assisted Intervention},
+  address = {Strasbourg, France},
+  year = {2026},
+  url = {https://hal.science/hal-05616884}
+}
 ```
